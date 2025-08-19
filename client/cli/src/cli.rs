@@ -1,0 +1,90 @@
+use clap::{Parser, Subcommand};
+
+#[derive(Parser)]
+#[command(name = "validator-blacklist-cli")]
+#[command(about = "A CLI tool for interacting with the Solana validator blacklist program")]
+
+pub struct Cli {
+    /// RPC URL for Solana cluster
+    #[arg(short('u'), long, default_value = "https://api.mainnet-beta.solana.com")]
+    pub rpc: String,
+
+    /// Program ID of the validator blacklist program
+    #[arg(short, long)]
+    pub program_id: String,
+
+    /// Keypair file path for the authority
+    #[arg(short, long)]
+    pub keypair: Option<String>,
+
+    #[command(subcommand)]
+    pub command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// List all blacklisted validators and their vote tallies
+    List,
+    
+    /// Vote to add a validator to the blacklist
+    VoteAdd {
+        /// Validator identity address to blacklist
+        validator_address: String,
+        /// Stake pool address casting the vote
+        stake_pool: String,
+        /// Reason for blacklisting
+        reason: String,
+        /// Optional delegation address if using delegated authority
+        #[arg(long)]
+        delegation: Option<String>,
+    },
+    
+    /// Vote to remove a validator from the blacklist
+    VoteRemove {
+        /// Validator identity address to remove from blacklist
+        validator_address: String,
+        /// Stake pool address casting the vote
+        stake_pool: String,
+        /// Reason for removal
+        reason: String,
+        /// Optional delegation address if using delegated authority
+        #[arg(long)]
+        delegation: Option<String>,
+    },
+    
+    /// Remove a previously cast vote to add a validator
+    UnvoteAdd {
+        /// Validator identity address
+        validator_address: String,
+        /// Stake pool address that cast the original vote
+        stake_pool: String,
+        /// Optional delegation address if using delegated authority
+        #[arg(long)]
+        delegation: Option<String>,
+    },
+    
+    /// Remove a previously cast vote to remove a validator
+    UnvoteRemove {
+        /// Validator identity address
+        validator_address: String,
+        /// Stake pool address that cast the original vote
+        stake_pool: String,
+        /// Optional delegation address if using delegated authority
+        #[arg(long)]
+        delegation: Option<String>,
+    },
+    
+    /// Create a delegation from stake pool manager to another authority
+    Delegate {
+        /// Stake pool address
+        stake_pool: String,
+        /// Address to delegate authority to
+        delegate: String,
+    },
+    
+    /// Remove a delegation
+    Undelegate {
+        /// Stake pool address
+        stake_pool: String,
+    },
+}
