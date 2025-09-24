@@ -6612,7 +6612,6 @@ dependencies = [
  "solana-sdk",
  "solana-sdk-ids",
  "solana-system-interface 2.0.0",
- "tokio",
  "validator_blacklist",
 ]
 

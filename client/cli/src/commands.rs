@@ -7,7 +7,7 @@ use anchor_client::solana_sdk::{
 };
 use anchor_client::solana_account_decoder::UiAccountEncoding;
 use anchor_client::{Client, Cluster};
-use anchor_lang::AccountDeserialize;
+use anchor_lang::{AccountDeserialize, Discriminator};
 use anyhow::{Result, Context};
 use solana_client::rpc_client::RpcClient;
 use solana_client::rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
@@ -17,30 +17,30 @@ use validator_blacklist::state::Blacklist;
 use std::str::FromStr;
 use std::rc::Rc;
 
-pub async fn run_command(cli: Cli) -> Result<()> {
+pub fn run_command(cli: Cli) -> Result<()> {
     let program_id = Pubkey::from_str(&cli.program_id)
         .context("Invalid program ID")?;
 
     match cli.command {
         Commands::List => {
-            list_blacklisted_validators(&cli.rpc, &program_id).await?;
+            list_blacklisted_validators(&cli.rpc, &program_id)?;
         }
         _ => {
             // For commands that require a keypair
             let keypair_path = cli.keypair
                 .context("Keypair path is required for this command")?;
-            
-            let keypair = read_keypair_file(&keypair_path)
-                .map_err(|e| anyhow::anyhow!("Failed to read keypair file: {}", e))?;
 
-            execute_instruction(cli.command, &cli.rpc, &keypair, &program_id).await?;
+            let keypair =read_keypair_file(&keypair_path)
+                    .map_err(|e| anyhow::anyhow!("Failed to read keypair file: {}", e))?;
+
+            execute_instruction(cli.command, &cli.rpc, &keypair, &program_id)?;
         }
     }
 
     Ok(())
 }
 
-async fn list_blacklisted_validators(rpc_url: &str, program_id: &Pubkey) -> Result<()> {
+fn list_blacklisted_validators(rpc_url: &str, program_id: &Pubkey) -> Result<()> {
     let rpc_client = RpcClient::new(rpc_url.to_string());
 
     // Get all blacklist accounts
@@ -48,7 +48,7 @@ async fn list_blacklisted_validators(rpc_url: &str, program_id: &Pubkey) -> Resu
         program_id,
         RpcProgramAccountsConfig {
             filters: Some(vec![
-                RpcFilterType::Memcmp(Memcmp::new_raw_bytes(0, b"blacklist".to_vec())),
+                RpcFilterType::Memcmp(Memcmp::new_raw_bytes(0, Blacklist::DISCRIMINATOR.to_vec())),
             ]),
             account_config: RpcAccountInfoConfig {
                 encoding: Some(UiAccountEncoding::Base64),
@@ -75,9 +75,9 @@ async fn list_blacklisted_validators(rpc_url: &str, program_id: &Pubkey) -> Resu
             continue;
         }
 
-        let mut data = &account.data[8..];
+        let mut data = account.data.as_slice();
         
-        let blacklist = Blacklist::try_deserialize(&mut data).unwrap();
+        let blacklist = Blacklist::try_deserialize(&mut data)?;
             
         println!(
             "{:<44} {:<10} {:<10}",
@@ -90,11 +90,12 @@ async fn list_blacklisted_validators(rpc_url: &str, program_id: &Pubkey) -> Resu
     Ok(())
 }
 
-async fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair, program_id: &Pubkey) -> Result<()> {
+fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair, program_id: &Pubkey) -> Result<()> {
     // Create the Anchor client
-    let cluster = Cluster::Custom(rpc_url.to_string(), "ws://localhost:8900".to_string());
+    let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
     let client = Client::new_with_options(cluster, Rc::new(keypair.insecure_clone()), CommitmentConfig::confirmed());
     let program = client.program(*program_id)?;
+    let cu = 1_000_000;
 
     match command {
         Commands::VoteAdd { validator_address, stake_pool, reason, delegation } => {
@@ -125,6 +126,7 @@ async fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair
 
             let mut request = program
                 .request()
+                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
                 .accounts(validator_blacklist::accounts::VoteAdd {
                     blacklist: blacklist_pda,
                     vote_add: vote_add_pda,
@@ -137,6 +139,7 @@ async fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair
                     validator_identity_address: validator_pubkey,
                     reason,
                 });
+
 
             // Add delegation account if provided
             if let Some(_delegation_addr) = delegation_pubkey {
@@ -184,6 +187,7 @@ async fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair
 
             let mut request = program
                 .request()
+                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
                 .accounts(validator_blacklist::accounts::VoteRemove {
                     blacklist: blacklist_pda,
                     vote_remove: vote_remove_pda,
@@ -243,6 +247,7 @@ async fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair
 
             let mut request = program
                 .request()
+                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
                 .accounts(validator_blacklist::accounts::UnvoteAdd {
                     blacklist: blacklist_pda,
                     vote_add: vote_add_pda,
@@ -299,6 +304,7 @@ async fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair
 
             let mut request = program
                 .request()
+                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
                 .accounts(validator_blacklist::accounts::UnvoteRemove {
                     blacklist: blacklist_pda,
                     vote_remove: vote_remove_pda,
@@ -344,6 +350,7 @@ async fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair
 
             let signature = program
                 .request()
+                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
                 .accounts(validator_blacklist::accounts::Delegate {
                     delegation: delegation_pda,
                     stake_pool: stake_pool_pubkey,
@@ -370,6 +377,7 @@ async fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair
 
             let signature = program
                 .request()
+                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
                 .accounts(validator_blacklist::accounts::Undelegate {
                     delegation: delegation_pda,
                     stake_pool: stake_pool_pubkey,
