@@ -2,7 +2,6 @@
 cluster = "localnet"
 wallet = "~/.config/solana/id.json"
 
-
 [programs.localnet]
 validator_blacklist = "Fu4zvEKjgxWjaQifp7fyghKJfk6HzUCaJRvoGffJBm6Q"
 
@@ -11,3 +10,9 @@ validator_blacklist = "Fu4zvEKjgxWjaQifp7fyghKJfk6HzUCaJRvoGffJBm6Q"
 
 [registry]
 url = "https://api.apr.dev"
+
+[test.validator]
+url = "https://api.mainnet-beta.solana.com"
+
+[scripts]
+test = "cargo test"

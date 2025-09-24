@@ -114,7 +114,8 @@ anchor build
 
 ### Testing
 ```bash
-anchor test
+# Use cargo test rather than anchor test as all unit tests use LiteSVM rather than the test validator local instance
+cargo test
 ```
 
 ### Deploying
