@@ -80,11 +80,23 @@ pub enum Commands {
         stake_pool: String,
         /// Address to delegate authority to
         delegate: String,
+        /// Output format: 'execute' (default) to execute the transaction, or 'base58' to serialize and print the transaction in base58 format
+        #[arg(long, default_value = "execute", help = "Output format: 'execute' (default) or 'base58'")]
+        output: String,
+        /// Manager pubkey (required when --output is 'base58'). When using base58 output, provide the manager's public key instead of using a keypair file
+        #[arg(long, help = "Manager pubkey (required when output is base58)")]
+        manager: Option<String>,
     },
     
     /// Remove a delegation
     Undelegate {
         /// Stake pool address
         stake_pool: String,
+        /// Output format: 'execute' (default) to execute the transaction, or 'base58' to serialize and print the transaction in base58 format
+        #[arg(long, default_value = "execute", help = "Output format: 'execute' (default) or 'base58'")]
+        output: String,
+        /// Manager pubkey (required when --output is 'base58'). When using base58 output, provide the manager's public key instead of using a keypair file
+        #[arg(long, help = "Manager pubkey (required when output is base58)")]
+        manager: Option<String>,
     },
 }
