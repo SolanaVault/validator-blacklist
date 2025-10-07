@@ -48,7 +48,7 @@ pub struct UnvoteRemove<'info> {
     #[account(
         mut,
         close = authority,
-        seeds = [b"vote_remove", authority.key().as_ref(), validator_identity_address.as_ref()],
+        seeds = [b"vote_remove", stake_pool.key().as_ref(), validator_identity_address.as_ref()],
         bump
     )]
     pub vote_remove: Account<'info, VoteRemoveFromBlacklist>,

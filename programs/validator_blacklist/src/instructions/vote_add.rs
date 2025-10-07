@@ -75,7 +75,7 @@ pub struct VoteAdd<'info> {
         init,
         payer = authority,
         space = VoteAddToBlacklist::LEN,
-        seeds = [b"vote_add", authority.key().as_ref(), validator_identity_address.as_ref()],
+        seeds = [b"vote_add", stake_pool.key().as_ref(), validator_identity_address.as_ref()],
         bump
     )]
     pub vote_add: Account<'info, VoteAddToBlacklist>,
