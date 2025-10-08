@@ -16,4 +16,10 @@ pub enum ValidatorBlacklistError {
     MathUnderflow,
     #[msg("The reason field exceeds the maximum allowed length")]
     ReasonTooLong,
+    #[msg("Stake pool does not meet minimum TVL requirement")]
+    InsufficientTvl,
+    #[msg("Stake pool program is not in the allowed programs list")]
+    UnauthorizedStakePoolProgram,
+    #[msg("Only the admin can perform this action")]
+    UnauthorizedAdmin,
 }

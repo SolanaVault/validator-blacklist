@@ -1,5 +1,6 @@
-import {Program, web3} from "@coral-xyz/anchor";
+import {BN, Program, web3} from "@coral-xyz/anchor";
 import anchor from "@coral-xyz/anchor";
+import fs from 'fs'
 import {
     PublicKey,
     Keypair,
@@ -15,6 +16,7 @@ import * as fs from "fs";
 import {struct, u8, publicKey, u64} from '@coral-xyz/borsh';
 import {ValidatorBlacklist} from "../target/types/validator_blacklist";
 import {InstructionErrorCustom, TransactionErrorInstructionError, TransactionMetadata} from "litesvm/dist/internal";
+import {STAKE_POOL_PROGRAM_ID} from "@solana/spl-stake-pool";
 
 /**
  * Copied from @solana/spl-stake-pool for compatibility.
@@ -31,9 +33,9 @@ type StakePoolLayout = {
     poolMint: PublicKey;
     managerFeeAccount: PublicKey;
     tokenProgramId: PublicKey;
-    totalLamports: anchor.BN;
-    poolTokenSupply: anchor.BN;
-    lastUpdateEpoch: anchor.BN;
+    totalLamports: BN;
+    poolTokenSupply: BN;
+    lastUpdateEpoch: BN;
 };
 
 const StakePoolLayout = struct<StakePoolLayout>([
@@ -77,15 +79,13 @@ function expectSuccessfulTransaction(result: TransactionMetadata | FailedTransac
         `Expected successful transaction metadata, got ${result.toString()}`);
 }
 
-async function cloneAccount(mbConnection: web3.Connection, svm: LiteSVM, account: PublicKey, modifier = (data: Buffer) => data) {
-
-    const accountInfo = await mbConnection.getAccountInfo(account);
-
+async function cloneAccount(path: string, svm: LiteSVM, account: PublicKey, modifier = (data: Buffer) => data, owner = STAKE_POOL_PROGRAM_ID) {
+    const {account: accountInfo} = JSON.parse(fs.readFileSync(path).toString());
     if (accountInfo) {
         svm.setAccount(account, {
             lamports: accountInfo.lamports,
-            data: modifier(accountInfo.data),
-            owner: accountInfo.owner,
+            data: modifier(Buffer.from(accountInfo.data[0], "base64")),
+            owner,
             executable: accountInfo.executable,
         });
     } else {
@@ -99,12 +99,16 @@ describe("Validator Blacklist with LiteSVM", () => {
     let program: Program<ValidatorBlacklist>;
 
     // Stake pool account (vSOL stake pool)
-    const stakePoolAddress = new PublicKey("Fu9BYC6tWBo1KMKaP3CFoKfRhqv9akmy3DuYwnCyWiyC");
+    const stakePoolAddress1 = Keypair.generate().publicKey;
+    const stakePoolAddress2 = Keypair.generate().publicKey;
+    const stakePoolBadProgram = Keypair.generate().publicKey;
     const stakePoolManager = Keypair.generate();
 
     let delegateAuthority: Keypair;
     let unauthorizedUser: Keypair;
     let validatorToBlacklist: PublicKey;
+    let configAdmin: Keypair;
+    let configAddress: Keypair;
 
     // PDAs
     let delegationPda: PublicKey;
@@ -116,22 +120,20 @@ describe("Validator Blacklist with LiteSVM", () => {
         // Initialize LiteSVM
         svm = new LiteSVM();
 
-        // Setup a connection to mainnet for account cloning
-        const mbConnection = new web3.Connection("https://api.mainnet-beta.solana.com");
-
         // Generate test accounts
         delegateAuthority = Keypair.generate();
         unauthorizedUser = Keypair.generate();
         validatorToBlacklist = Keypair.generate().publicKey;
+        configAdmin = Keypair.generate();
 
         // Get some SOL
         svm.airdrop(stakePoolManager.publicKey, BigInt(10 * LAMPORTS_PER_SOL));
         svm.airdrop(delegateAuthority.publicKey, BigInt(10 * LAMPORTS_PER_SOL));
         svm.airdrop(unauthorizedUser.publicKey, BigInt(10 * LAMPORTS_PER_SOL));
+        svm.airdrop(configAdmin.publicKey, BigInt(10 * LAMPORTS_PER_SOL));
 
         // Clone vSOL stake pool state account and set the manager to our mocked manager key for testing
-        await cloneAccount(mbConnection, svm, stakePoolAddress, (data) => {
-
+        await cloneAccount("./tests/accounts/stakePool.json", svm, stakePoolAddress1, (data) => {
             const stakePoolDeserialized = StakePoolLayout.decode(data);
             stakePoolDeserialized.manager = stakePoolManager.publicKey;
             const buffer = Buffer.alloc(data.length);
@@ -141,9 +143,39 @@ describe("Validator Blacklist with LiteSVM", () => {
             return buffer;
         });
 
-        expect(svm.getAccount(stakePoolAddress)).to.be.not.null;
-        expect(svm.getAccount(stakePoolAddress)?.data.length).to.be.equal(611);
-        expect(StakePoolLayout.decode(Buffer.from(svm.getAccount(stakePoolAddress)?.data)).manager.toString()).to.be.equal(stakePoolManager.publicKey.toString());
+        await cloneAccount("./tests/accounts/stakePool.json", svm, stakePoolAddress2, (data) => {
+            const stakePoolDeserialized = StakePoolLayout.decode(data);
+            stakePoolDeserialized.manager = stakePoolManager.publicKey;
+            const buffer = Buffer.alloc(data.length);
+
+            StakePoolLayout.encode(stakePoolDeserialized, buffer);
+
+            return buffer;
+        });
+
+        await cloneAccount("./tests/accounts/stakePool.json", svm, stakePoolAddress2, (data) => {
+            const stakePoolDeserialized = StakePoolLayout.decode(data);
+            stakePoolDeserialized.manager = stakePoolManager.publicKey;
+            const buffer = Buffer.alloc(data.length);
+
+            StakePoolLayout.encode(stakePoolDeserialized, buffer);
+
+            return buffer;
+        });
+
+        await cloneAccount("./tests/accounts/stakePool.json", svm, stakePoolBadProgram, (data) => {
+            const stakePoolDeserialized = StakePoolLayout.decode(data);
+            stakePoolDeserialized.manager = stakePoolManager.publicKey;
+            const buffer = Buffer.alloc(data.length);
+
+            StakePoolLayout.encode(stakePoolDeserialized, buffer);
+
+            return buffer;
+        }, SystemProgram.programId);
+
+        expect(svm.getAccount(stakePoolAddress1)).to.be.not.null;
+        expect(svm.getAccount(stakePoolAddress1)?.data.length).to.be.equal(611);
+        expect(StakePoolLayout.decode(Buffer.from(svm.getAccount(stakePoolAddress1)?.data)).manager.toString()).to.be.equal(stakePoolManager.publicKey.toString());
 
         // Load and deploy the program
         const programKeypairData = JSON.parse(fs.readFileSync("./target/deploy/validator_blacklist-keypair.json", "utf8"));
@@ -184,12 +216,35 @@ describe("Validator Blacklist with LiteSVM", () => {
 
         program = new Program(idl, mockProvider) as Program<ValidatorBlacklist>;
 
-        // Calculate PDAs
+        // Calculate config PDA
+        configAddress = Keypair.generate();
+
+        // Initialize the config first
+        const initConfigIx = await program.methods
+            .initConfig(
+                new BN(1000000000), // 1 SOL minimum TVL
+                [STAKE_POOL_PROGRAM_ID] // Allow the vSOL stake pool program
+            )
+            .accounts({
+                config: configAddress.publicKey,
+                admin: configAdmin.publicKey,
+                systemProgram: SystemProgram.programId,
+            })
+            .instruction();
+
+        const initConfigTx = new Transaction().add(initConfigIx);
+        initConfigTx.feePayer = configAdmin.publicKey;
+        initConfigTx.recentBlockhash = svm.latestBlockhash();
+        initConfigTx.sign(configAdmin, configAddress);
+        const initConfigResult = svm.sendTransaction(initConfigTx);
+        expectSuccessfulTransaction(initConfigResult);
+
+        // Calculate PDAs with config included
         [delegationPda] = PublicKey.findProgramAddressSync(
             [
                 Buffer.from("delegation"),
-                stakePoolAddress.toBuffer(),
-                stakePoolManager.publicKey.toBuffer()
+                configAddress.publicKey.toBuffer(),
+                stakePoolAddress1.toBuffer()
             ],
             programId
         );
@@ -197,16 +252,17 @@ describe("Validator Blacklist with LiteSVM", () => {
         [blacklistPda] = PublicKey.findProgramAddressSync(
             [
                 Buffer.from("blacklist"),
+                configAddress.publicKey.toBuffer(),
                 validatorToBlacklist.toBuffer()
             ],
             programId
         );
 
-
         [voteAddPda] = PublicKey.findProgramAddressSync(
             [
                 Buffer.from("vote_add"),
-                stakePoolAddress.toBuffer(),
+                configAddress.publicKey.toBuffer(),
+                stakePoolAddress1.toBuffer(),
                 validatorToBlacklist.toBuffer()
             ],
             programId
@@ -215,16 +271,78 @@ describe("Validator Blacklist with LiteSVM", () => {
         [voteRemovePda] = PublicKey.findProgramAddressSync(
             [
                 Buffer.from("vote_remove"),
-                stakePoolAddress.toBuffer(),
+                configAddress.publicKey.toBuffer(),
+                stakePoolAddress1.toBuffer(),
                 validatorToBlacklist.toBuffer()
             ],
             programId
         );
     });
 
+    describe("Config Management", () => {
+        it("Should have initialized config correctly", async () => {
+            const configAccount = await program.account.config.fetch(configAddress.publicKey);
+            expect(configAccount.admin.toString()).to.equal(configAdmin.publicKey.toString());
+            expect(configAccount.minTvl.toString()).to.equal("1000000000");
+            expect(configAccount.allowedPrograms).to.have.length(1);
+            expect(configAccount.allowedPrograms[0].toString()).to.equal(STAKE_POOL_PROGRAM_ID.toString());
+        });
+
+        it("Should allow admin to update config", async () => {
+            const updateConfigIx = await program.methods
+                .updateConfig(
+                    new BN(2000000000), // 2 SOL minimum TVL
+                    null // Don't update allowed programs
+                )
+                .accounts({
+                    config: configAddress.publicKey,
+                    admin: configAdmin.publicKey,
+                })
+                .instruction();
+
+            const tx = new Transaction().add(updateConfigIx);
+            tx.feePayer = configAdmin.publicKey;
+            tx.recentBlockhash = svm.latestBlockhash();
+            tx.sign(configAdmin);
+
+            const result = svm.sendTransaction(tx);
+            expectSuccessfulTransaction(result);
+
+            const configAccount = await program.account.config.fetch(configAddress.publicKey);
+            expect(configAccount.minTvl.toString()).to.equal("2000000000");
+        });
+
+        it("Should allow admin to update admin", async () => {
+            const newAdmin = Keypair.generate();
+            svm.airdrop(newAdmin.publicKey, BigInt(LAMPORTS_PER_SOL));
+
+            const updateAdminIx = await program.methods
+                .updateConfigAdmin(newAdmin.publicKey)
+                .accounts({
+                    config: configAddress.publicKey,
+                    admin: configAdmin.publicKey,
+                })
+                .instruction();
+
+            const tx = new Transaction().add(updateAdminIx);
+            tx.feePayer = configAdmin.publicKey;
+            tx.recentBlockhash = svm.latestBlockhash();
+            tx.sign(configAdmin);
+
+            const result = svm.sendTransaction(tx);
+            expectSuccessfulTransaction(result);
+
+            const configAccount = await program.account.config.fetch(configAddress.publicKey);
+            expect(configAccount.admin.toString()).to.equal(newAdmin.publicKey.toString());
+
+            // Update configAdmin for subsequent tests
+            configAdmin = newAdmin;
+        });
+    });
+
     describe("Stake Pool Validation", () => {
         it("Should validate stake pool with mock manager", async () => {
-            const stakePoolAccount = svm.getAccount(stakePoolAddress);
+            const stakePoolAccount = svm.getAccount(stakePoolAddress1);
             expect(stakePoolAccount).to.not.be.null;
 
             const stakePool = StakePoolLayout.decode(Buffer.from(stakePoolAccount.data));
@@ -234,12 +352,12 @@ describe("Validator Blacklist with LiteSVM", () => {
     });
 
     describe("PDA Calculation Tests", () => {
-        it("Should calculate consistent PDAs for delegation", async () => {
+        it("Should calculate consistent PDAs for delegation with config", async () => {
             const [calculatedPda, bump] = PublicKey.findProgramAddressSync(
                 [
                     Buffer.from("delegation"),
-                    stakePoolAddress.toBuffer(),
-                    stakePoolManager.publicKey.toBuffer()
+                    configAddress.publicKey.toBuffer(),
+                    stakePoolAddress1.toBuffer()
                 ],
                 programId
             );
@@ -252,10 +370,11 @@ describe("Validator Blacklist with LiteSVM", () => {
             console.log("Delegation bump:", bump);
         });
 
-        it("Should calculate consistent PDAs for blacklist", async () => {
+        it("Should calculate consistent PDAs for blacklist with config", async () => {
             const [calculatedPda, bump] = PublicKey.findProgramAddressSync(
                 [
                     Buffer.from("blacklist"),
+                    configAddress.publicKey.toBuffer(),
                     validatorToBlacklist.toBuffer()
                 ],
                 programId
@@ -272,12 +391,12 @@ describe("Validator Blacklist with LiteSVM", () => {
             const validator2 = Keypair.generate().publicKey;
 
             const [blacklist1Pda] = PublicKey.findProgramAddressSync(
-                [Buffer.from("blacklist"), validatorToBlacklist.toBuffer()],
+                [Buffer.from("blacklist"), configAddress.publicKey.toBuffer(), validatorToBlacklist.toBuffer()],
                 programId
             );
 
             const [blacklist2Pda] = PublicKey.findProgramAddressSync(
-                [Buffer.from("blacklist"), validator2.toBuffer()],
+                [Buffer.from("blacklist"), configAddress.publicKey.toBuffer(), validator2.toBuffer()],
                 programId
             );
 
@@ -292,7 +411,8 @@ describe("Validator Blacklist with LiteSVM", () => {
                 const delegateIx = await program.methods
                     .delegate()
                     .accountsPartial({
-                        stakePool: stakePoolAddress,
+                        config: configAddress.publicKey,
+                        stakePool: stakePoolAddress1,
                         delegation: delegationPda,
                         manager: stakePoolManager.publicKey,
                         delegate: delegateAuthority.publicKey,
@@ -311,7 +431,7 @@ describe("Validator Blacklist with LiteSVM", () => {
                 // Verify delegation account was created
                 const delegationAccount = await program.account.delegation.fetchNullable(delegationPda);
                 expect(delegationAccount).to.not.be.null;
-                expect(delegationAccount.stakePool.toString()).to.equal(stakePoolAddress.toString());
+                expect(delegationAccount.stakePool.toString()).to.equal(stakePoolAddress1.toString());
                 expect(delegationAccount.manager.toString()).to.equal(stakePoolManager.publicKey.toString());
                 expect(delegationAccount.delegate.toString()).to.equal(delegateAuthority.publicKey.toString());
 
@@ -324,8 +444,8 @@ describe("Validator Blacklist with LiteSVM", () => {
                 const [wrongDelegationPda] = PublicKey.findProgramAddressSync(
                     [
                         Buffer.from("delegation"),
-                        stakePoolAddress.toBuffer(),
-                        wrongManager.publicKey.toBuffer()
+                        configAddress.publicKey.toBuffer(),
+                        stakePoolAddress2.toBuffer()
                     ],
                     programId
                 );
@@ -333,7 +453,8 @@ describe("Validator Blacklist with LiteSVM", () => {
                 const delegateIx = await program.methods
                     .delegate()
                     .accountsPartial({
-                        stakePool: stakePoolAddress,
+                        config: configAddress.publicKey,
+                        stakePool: stakePoolAddress2,
                         delegation: wrongDelegationPda,
                         manager: wrongManager.publicKey,
                         delegate: delegateAuthority.publicKey,
@@ -358,7 +479,8 @@ describe("Validator Blacklist with LiteSVM", () => {
                 const [unauthorizedVoteAddPda] = PublicKey.findProgramAddressSync(
                     [
                         Buffer.from("vote_add"),
-                        stakePoolAddress.toBuffer(),
+                        configAddress.publicKey.toBuffer(),
+                        stakePoolAddress2.toBuffer(),
                         validatorToBlacklist.toBuffer()
                     ],
                     programId
@@ -367,7 +489,8 @@ describe("Validator Blacklist with LiteSVM", () => {
                 const voteAddIx = await program.methods
                     .voteAdd(validatorToBlacklist, "Unauthorized vote")
                     .accountsPartial({
-                        stakePool: stakePoolAddress,
+                        config: configAddress.publicKey,
+                        stakePool: stakePoolAddress2,
                         blacklist: blacklistPda,
                         voteAdd: unauthorizedVoteAddPda,
                         delegation: null,
@@ -383,10 +506,8 @@ describe("Validator Blacklist with LiteSVM", () => {
 
                 const result = svm.sendTransaction(tx);
 
-
                 expect(result).to.be.instanceOf(FailedTransactionMetadata);
                 expectInstructionErrorCustomCode(result as FailedTransactionMetadata, 6000);
-
 
             });
             it("Should successfully vote to add validator to blacklist", async () => {
@@ -395,7 +516,8 @@ describe("Validator Blacklist with LiteSVM", () => {
                 const voteAddIx = await program.methods
                     .voteAdd(validatorToBlacklist, reason)
                     .accountsPartial({
-                        stakePool: stakePoolAddress,
+                        config: configAddress.publicKey,
+                        stakePool: stakePoolAddress1,
                         blacklist: blacklistPda,
                         voteAdd: voteAddPda,
                         delegation: null,
@@ -424,7 +546,8 @@ describe("Validator Blacklist with LiteSVM", () => {
                 const voteRemoveIx = await program.methods
                     .voteRemove(validatorToBlacklist, reason)
                     .accountsPartial({
-                        stakePool: stakePoolAddress,
+                        config: configAddress.publicKey,
+                        stakePool: stakePoolAddress1,
                         blacklist: blacklistPda,
                         voteRemove: voteRemovePda,
                         delegation: null,
@@ -448,7 +571,8 @@ describe("Validator Blacklist with LiteSVM", () => {
                 const unvoteAddIx = await program.methods
                     .unvoteAdd(validatorToBlacklist)
                     .accountsPartial({
-                        stakePool: stakePoolAddress,
+                        config: configAddress.publicKey,
+                        stakePool: stakePoolAddress1,
                         blacklist: blacklistPda,
                         voteAdd: voteAddPda,
                         delegation: null,
@@ -481,7 +605,8 @@ describe("Validator Blacklist with LiteSVM", () => {
                 const [wrongDelegatedVoteAddPda] = PublicKey.findProgramAddressSync(
                     [
                         Buffer.from("vote_add"),
-                        stakePoolAddress.toBuffer(),
+                        configAddress.publicKey.toBuffer(),
+                        stakePoolAddress1.toBuffer(),
                         validatorToBlacklist.toBuffer()
                     ],
                     programId
@@ -490,7 +615,8 @@ describe("Validator Blacklist with LiteSVM", () => {
                 const voteAddIx = await program.methods
                     .voteAdd(validatorToBlacklist, "Wrong delegate")
                     .accountsPartial({
-                        stakePool: stakePoolAddress,
+                        config: configAddress.publicKey,
+                        stakePool: stakePoolAddress1,
                         blacklist: blacklistPda,
                         voteAdd: wrongDelegatedVoteAddPda,
                         delegation: delegationPda,
@@ -515,7 +641,8 @@ describe("Validator Blacklist with LiteSVM", () => {
                 const [delegatedVoteAddPda] = PublicKey.findProgramAddressSync(
                     [
                         Buffer.from("vote_add"),
-                        stakePoolAddress.toBuffer(),
+                        configAddress.publicKey.toBuffer(),
+                        stakePoolAddress1.toBuffer(),
                         validatorToBlacklist.toBuffer()
                     ],
                     programId
@@ -525,7 +652,8 @@ describe("Validator Blacklist with LiteSVM", () => {
                 const voteAddIx = await program.methods
                     .voteAdd(validatorToBlacklist, reason)
                     .accountsPartial({
-                        stakePool: stakePoolAddress,
+                        config: configAddress.publicKey,
+                        stakePool: stakePoolAddress1,
                         blacklist: blacklistPda,
                         voteAdd: delegatedVoteAddPda,
                         delegation: delegationPda,
@@ -545,7 +673,7 @@ describe("Validator Blacklist with LiteSVM", () => {
                 const voteAddAccount = await program.account.voteAddToBlacklist.fetchNullable(delegatedVoteAddPda);
                 expect(voteAddAccount).to.not.be.null;
                 expect(voteAddAccount.reason).to.equal(reason);
-                expect(voteAddAccount.stakePool.toString()).to.equal(stakePoolAddress.toString());
+                expect(voteAddAccount.stakePool.toString()).to.equal(stakePoolAddress1.toString());
             });
 
         });
@@ -556,7 +684,8 @@ describe("Validator Blacklist with LiteSVM", () => {
                 const undelegateIx = await program.methods
                     .undelegate()
                     .accounts({
-                        stakePool: stakePoolAddress,
+                        config: configAddress.publicKey,
+                        stakePool: stakePoolAddress1,
                         delegation: delegationPda,
                         manager: stakePoolManager.publicKey,
                     })
@@ -578,14 +707,15 @@ describe("Validator Blacklist with LiteSVM", () => {
             it("Should handle voting on multiple validators", async () => {
                 const validator2 = Keypair.generate().publicKey;
                 const [blacklist2Pda] = PublicKey.findProgramAddressSync(
-                    [Buffer.from("blacklist"), validator2.toBuffer()],
+                    [Buffer.from("blacklist"), configAddress.publicKey.toBuffer(), validator2.toBuffer()],
                     programId
                 );
 
                 const [vote2AddPda] = PublicKey.findProgramAddressSync(
                     [
                         Buffer.from("vote_add"),
-                        stakePoolAddress.toBuffer(),
+                        configAddress.publicKey.toBuffer(),
+                        stakePoolAddress1.toBuffer(),
                         validator2.toBuffer()
                     ],
                     programId
@@ -594,7 +724,8 @@ describe("Validator Blacklist with LiteSVM", () => {
                 const voteAddIx = await program.methods
                     .voteAdd(validator2, "Second validator")
                     .accountsPartial({
-                        stakePool: stakePoolAddress,
+                        config: configAddress.publicKey,
+                        stakePool: stakePoolAddress1,
                         blacklist: blacklist2Pda,
                         voteAdd: vote2AddPda,
                         delegation: null,
@@ -618,7 +749,8 @@ describe("Validator Blacklist with LiteSVM", () => {
                 const voteAddIx = await program.methods
                     .voteAdd(validatorToBlacklist, "Invalid PDA test")
                     .accountsPartial({
-                        stakePool: stakePoolAddress,
+                        config: configAddress.publicKey,
+                        stakePool: stakePoolAddress1,
                         blacklist: invalidPda, // Invalid PDA
                         voteAdd: voteAddPda,
                         delegation: null,
@@ -637,6 +769,120 @@ describe("Validator Blacklist with LiteSVM", () => {
                 expectInstructionErrorCustomCode(result as FailedTransactionMetadata, 2006 /* seed constraint violation */);
 
             });
+
+            it("Should fail with unauthorized stake pool program", async () => {
+                // Update config to remove the stake pool from allowed programs
+                const updateConfigIx = await program.methods
+                    .updateConfig(
+                        null,
+                        [] // Empty allowed programs list
+                    )
+                    .accounts({
+                        config: configAddress.publicKey,
+                        admin: configAdmin.publicKey,
+                    })
+                    .instruction();
+
+                const updateTx = new Transaction().add(updateConfigIx);
+                updateTx.feePayer = configAdmin.publicKey;
+                updateTx.recentBlockhash = svm.latestBlockhash();
+                updateTx.sign(configAdmin);
+
+                const updateResult = svm.sendTransaction(updateTx);
+                expectSuccessfulTransaction(updateResult);
+
+                // Try to vote with unauthorized program
+                const [unauthorizedProgramVoteAddPda] = PublicKey.findProgramAddressSync(
+                    [
+                        Buffer.from("vote_add"),
+                        configAddress.publicKey.toBuffer(),
+                        stakePoolBadProgram.toBuffer(),
+                        validatorToBlacklist.toBuffer()
+                    ],
+                    programId
+                );
+
+                const voteAddIx = await program.methods
+                    .voteAdd(validatorToBlacklist, "Should fail due to unauthorized program")
+                    .accountsPartial({
+                        config: configAddress.publicKey,
+                        stakePool: stakePoolBadProgram,
+                        blacklist: blacklistPda,
+                        voteAdd: unauthorizedProgramVoteAddPda,
+                        delegation: null,
+                        authority: stakePoolManager.publicKey,
+                        systemProgram: SystemProgram.programId,
+                    })
+                    .instruction();
+
+                const voteTx = new Transaction().add(voteAddIx);
+                voteTx.feePayer = stakePoolManager.publicKey;
+                voteTx.recentBlockhash = svm.latestBlockhash();
+                voteTx.sign(stakePoolManager);
+
+                const voteResult = svm.sendTransaction(voteTx);
+                expect(voteResult).to.be.instanceOf(FailedTransactionMetadata);
+                expectInstructionErrorCustomCode(voteResult as FailedTransactionMetadata, 6008); // UnauthorizedStakePoolProgram error code
+            });
+
+            it("Should fail with insufficient TVL", async () => {
+                // Update config to require higher TVL than the stake pool has
+                const currentStakePool = StakePoolLayout.decode(Buffer.from(svm.getAccount(stakePoolAddress2)?.data));
+                const higherTvl = new BN(currentStakePool.totalLamports.toString()).add(new BN(1000000000));
+
+                const updateConfigIx = await program.methods
+                    .updateConfig(
+                        higherTvl,
+                        null
+                    )
+                    .accounts({
+                        config: configAddress.publicKey,
+                        admin: configAdmin.publicKey,
+                    })
+                    .instruction();
+
+                const updateTx = new Transaction().add(updateConfigIx);
+                updateTx.feePayer = configAdmin.publicKey;
+                updateTx.recentBlockhash = svm.latestBlockhash();
+                updateTx.sign(configAdmin);
+
+                const updateResult = svm.sendTransaction(updateTx);
+                expectSuccessfulTransaction(updateResult);
+
+                // Try to vote with insufficient TVL
+                const [insufficientTvlVoteAddPda] = PublicKey.findProgramAddressSync(
+                    [
+                        Buffer.from("vote_add"),
+                        configAddress.publicKey.toBuffer(),
+                        stakePoolAddress2.toBuffer(),
+                        validatorToBlacklist.toBuffer()
+                    ],
+                    programId
+                );
+
+                const voteAddIx = await program.methods
+                    .voteAdd(validatorToBlacklist, "Should fail due to TVL")
+                    .accountsPartial({
+                        config: configAddress.publicKey,
+                        stakePool: stakePoolAddress2,
+                        blacklist: blacklistPda,
+                        voteAdd: insufficientTvlVoteAddPda,
+                        delegation: null,
+                        authority: stakePoolManager.publicKey,
+                        systemProgram: SystemProgram.programId,
+                    })
+                    .instruction();
+
+                const voteTx = new Transaction().add(voteAddIx);
+                voteTx.feePayer = stakePoolManager.publicKey;
+                voteTx.recentBlockhash = svm.latestBlockhash();
+                voteTx.sign(stakePoolManager);
+
+                const voteResult = svm.sendTransaction(voteTx);
+                expect(voteResult).to.be.instanceOf(FailedTransactionMetadata);
+                expectInstructionErrorCustomCode(voteResult as FailedTransactionMetadata, 6007); // InsufficientTvl error code
+            });
+
         });
     });
 });

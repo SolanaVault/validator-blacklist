@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use crate::state::Delegation;
+use crate::state::{Delegation, Config};
 
 /// Remove delegation of authority
 pub fn undelegate(
@@ -15,10 +15,14 @@ pub fn undelegate(
 
 #[derive(Accounts)]
 pub struct Undelegate<'info> {
+    /// Global configuration account
+    #[account()]
+    pub config: Account<'info, Config>,
+
     #[account(
         mut,
         close = manager,
-        seeds = [b"delegation", stake_pool.key().as_ref(), manager.key().as_ref()],
+        seeds = [b"delegation", config.key().as_ref(), stake_pool.key().as_ref()],
         bump,
         has_one = manager,
         has_one = stake_pool,
