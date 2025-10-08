@@ -16,6 +16,32 @@ declare_id!("C7662BVQCwLuorurd8vXohNczQuMHMhDqZ4JcMMge77d");
 pub mod validator_blacklist {
     use super::*;
 
+    /// Initialize the global configuration
+    pub fn init_config(
+        ctx: Context<InitConfig>,
+        min_tvl: u64,
+        allowed_programs: Vec<Pubkey>,
+    ) -> Result<()> {
+        instructions::init_config::init_config(ctx, min_tvl, allowed_programs)
+    }
+
+    /// Update the admin of the config
+    pub fn update_config_admin(
+        ctx: Context<UpdateConfigAdmin>,
+        new_admin: Pubkey,
+    ) -> Result<()> {
+        instructions::update_config_admin::update_config_admin(ctx, new_admin)
+    }
+
+    /// Update the config settings
+    pub fn update_config(
+        ctx: Context<UpdateConfig>,
+        min_tvl: Option<u64>,
+        allowed_programs: Option<Vec<Pubkey>>,
+    ) -> Result<()> {
+        instructions::update_config::update_config(ctx, min_tvl, allowed_programs)
+    }
+
     /// Delegate authority from a stake pool manager to another address
     pub fn delegate(
         ctx: Context<Delegate>,

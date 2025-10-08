@@ -1,6 +1,21 @@
 use anchor_lang::prelude::*;
 
 pub const MAX_REASON_LENGTH: usize = 1024;
+const MAX_ALLOWED_PROGRAMS: usize = 10;
+
+/// Global configuration for the validator blacklist program
+#[account]
+#[derive(InitSpace)]
+pub struct Config {
+    pub admin: Pubkey,                     // 32 bytes - admin who can update config
+    pub min_tvl: u64,                      // 8 bytes - minimum total value locked required
+    #[max_len(MAX_ALLOWED_PROGRAMS)]
+    pub allowed_programs: Vec<Pubkey>,     // 4 + (32 * 10) bytes - allowed stake pool programs
+}
+
+impl Config {
+    pub const LEN: usize = 8 + 32 + 8 + 4 + (32 * MAX_ALLOWED_PROGRAMS); // discriminator + admin + min_tvl + vec len + allowed_programs
+}
 
 /// State account representing a validator that has votes for blacklisting
 #[account]

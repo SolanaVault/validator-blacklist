@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use crate::authority_checks;
-use crate::stake_pool_helpers::deserialize_stake_pool_with_checks;
-use crate::state::{Blacklist, Delegation, VoteAddToBlacklist, MAX_REASON_LENGTH};
+use crate::stake_pool_helpers::{deserialize_stake_pool_with_checks, validate_stake_pool_config};
+use crate::state::{Blacklist, Delegation, VoteAddToBlacklist, Config, MAX_REASON_LENGTH};
 use crate::error::ValidatorBlacklistError;
 
 /// Vote to add a validator to the blacklist
@@ -21,6 +21,13 @@ pub fn vote_add(
     let clock = Clock::get()?;
 
     let stake_pool = deserialize_stake_pool_with_checks(&ctx.accounts.stake_pool.try_borrow_data()?)?;
+
+    // Validate stake pool meets config requirements
+    validate_stake_pool_config(
+        &stake_pool,
+        &ctx.accounts.stake_pool.owner,
+        &ctx.accounts.config,
+    )?;
 
     // Validate the authority
     authority_checks::check_authority(
@@ -57,6 +64,10 @@ pub fn vote_add(
 #[derive(Accounts)]
 #[instruction(validator_identity_address: Pubkey, reason: String)]
 pub struct VoteAdd<'info> {
+    /// Global configuration account
+    #[account()]
+    pub config: Account<'info, Config>,
+
     /// The stake pool account for stake pool that is casting the vote
     /// CHECK: We manually validate this is a valid stake pool in the instruction logic
     #[account()]
@@ -66,7 +77,7 @@ pub struct VoteAdd<'info> {
         init_if_needed,
         payer = authority,
         space = Blacklist::LEN,
-        seeds = [b"blacklist", validator_identity_address.as_ref()],
+        seeds = [b"blacklist", config.key().as_ref(), validator_identity_address.as_ref()],
         bump
     )]
     pub blacklist: Account<'info, Blacklist>,
@@ -75,12 +86,16 @@ pub struct VoteAdd<'info> {
         init,
         payer = authority,
         space = VoteAddToBlacklist::LEN,
-        seeds = [b"vote_add", stake_pool.key().as_ref(), validator_identity_address.as_ref()],
+        seeds = [b"vote_add", config.key().as_ref(), stake_pool.key().as_ref(), validator_identity_address.as_ref()],
         bump
     )]
     pub vote_add: Account<'info, VoteAddToBlacklist>,
 
     /// Optional delegation account - if present, authority must be the delegate
+    #[account(
+        seeds = [b"delegation", config.key().as_ref(), stake_pool.key().as_ref()],
+        bump
+    )]
     pub delegation: Option<Account<'info, Delegation>>,
 
     /// The authority (either manager or delegated authority)
