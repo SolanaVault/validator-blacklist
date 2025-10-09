@@ -10,7 +10,7 @@ pub mod authority_checks;
 
 use instructions::*;
 
-declare_id!("C7662BVQCwLuorurd8vXohNczQuMHMhDqZ4JcMMge77d");
+declare_id!("Fu4zvEKjgxWjaQifp7fyghKJfk6HzUCaJRvoGffJBm6Q");
 
 #[program]
 pub mod validator_blacklist {
