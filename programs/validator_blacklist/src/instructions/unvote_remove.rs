@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use crate::authority_checks;
-use crate::stake_pool_helpers::deserialize_stake_pool_with_checks;
-use crate::state::{Blacklist, VoteRemoveFromBlacklist, Delegation};
+use crate::stake_pool_helpers::{deserialize_stake_pool_with_checks, validate_stake_pool_config};
+use crate::state::{Blacklist, VoteRemoveFromBlacklist, Delegation, Config};
 use crate::error::ValidatorBlacklistError;
 
 /// Remove a previously cast vote to remove a validator from the blacklist
@@ -34,13 +34,17 @@ pub fn unvote_remove(
 #[derive(Accounts)]
 #[instruction(validator_identity_address: Pubkey)]
 pub struct UnvoteRemove<'info> {
+    /// Global configuration account
+    #[account()]
+    pub config: Account<'info, Config>,
+
     /// The stake pool account to validate the authority
     /// CHECK: We manually validate this is a valid stake pool in the instruction logic
     pub stake_pool: UncheckedAccount<'info>,
 
     #[account(
         mut,
-        seeds = [b"blacklist", validator_identity_address.as_ref()],
+        seeds = [b"blacklist", config.key().as_ref(), validator_identity_address.as_ref()],
         bump
     )]
     pub blacklist: Account<'info, Blacklist>,
@@ -48,12 +52,16 @@ pub struct UnvoteRemove<'info> {
     #[account(
         mut,
         close = authority,
-        seeds = [b"vote_remove", authority.key().as_ref(), validator_identity_address.as_ref()],
+        seeds = [b"vote_remove", config.key().as_ref(), stake_pool.key().as_ref(), validator_identity_address.as_ref()],
         bump
     )]
     pub vote_remove: Account<'info, VoteRemoveFromBlacklist>,
 
     /// Optional delegation account - if present, authority must be the delegate
+    #[account(
+        seeds = [b"delegation", config.key().as_ref(), stake_pool.key().as_ref()],
+        bump
+    )]
     pub delegation: Option<Account<'info, Delegation>>,
 
     /// The authority (either manager or delegated authority)
