@@ -4,6 +4,9 @@ pub mod unvote_add;
 pub mod unvote_remove;
 pub mod delegate;
 pub mod undelegate;
+pub mod init_config;
+pub mod update_config;
+pub mod update_config_admin;
 
 pub use vote_add::*;
 pub use vote_remove::*;
@@ -11,3 +14,6 @@ pub use unvote_add::*;
 pub use unvote_remove::*;
 pub use delegate::*;
 pub use undelegate::*;
+pub use init_config::*;
+pub use update_config::*;
+pub use update_config_admin::*;
