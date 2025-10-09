@@ -13,13 +13,6 @@ pub fn unvote_add(
 
     let stake_pool = deserialize_stake_pool_with_checks(&ctx.accounts.stake_pool.try_borrow_data()?)?;
 
-    // Validate stake pool meets config requirements
-    validate_stake_pool_config(
-        &stake_pool,
-        &ctx.accounts.stake_pool.owner,
-        &ctx.accounts.config,
-    )?;
-
     // Validate the authority
     authority_checks::check_authority(
         ctx.accounts.delegation.as_deref(), 
