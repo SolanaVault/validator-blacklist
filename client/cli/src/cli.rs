@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 
 pub struct Cli {
     /// RPC URL for Solana cluster
-    #[arg(short('u'), long, default_value = "https://api.mainnet-beta.solana.com")]
+    #[arg(short('u'), long, default_value = "http://localhost:8899")]
     pub rpc: String,
 
     /// Program ID of the validator blacklist program
@@ -26,8 +26,41 @@ pub enum Commands {
     /// List all blacklisted validators and their vote tallies
     List,
     
+    /// Create the global configuration account
+    CreateConfig {
+        /// Config account address (should be a keypair)
+        config: String,
+        /// Minimum TVL required for stake pools
+        min_tvl: u64,
+        /// Comma-separated list of allowed stake pool program IDs
+        #[arg(value_delimiter = ',')]
+        allowed_programs: Vec<String>,
+    },
+    
+    /// Update the config settings (min_tvl and/or allowed_programs)
+    UpdateConfig {
+        /// Config account address
+        config: String,
+        /// New minimum TVL (optional)
+        #[arg(long)]
+        min_tvl: Option<u64>,
+        /// Comma-separated list of new allowed stake pool program IDs (optional)
+        #[arg(long, value_delimiter = ',')]
+        allowed_programs: Option<Vec<String>>,
+    },
+    
+    /// Update the admin of the config
+    UpdateConfigAdmin {
+        /// Config account address
+        config: String,
+        /// New admin pubkey
+        new_admin: String,
+    },
+    
     /// Vote to add a validator to the blacklist
     VoteAdd {
+        /// Config account address
+        config: String,
         /// Validator identity address to blacklist
         validator_address: String,
         /// Stake pool address casting the vote
@@ -41,6 +74,8 @@ pub enum Commands {
     
     /// Vote to remove a validator from the blacklist
     VoteRemove {
+        /// Config account address
+        config: String,
         /// Validator identity address to remove from blacklist
         validator_address: String,
         /// Stake pool address casting the vote
@@ -54,6 +89,8 @@ pub enum Commands {
     
     /// Remove a previously cast vote to add a validator
     UnvoteAdd {
+        /// Config account address
+        config: String,
         /// Validator identity address
         validator_address: String,
         /// Stake pool address that cast the original vote
@@ -65,6 +102,8 @@ pub enum Commands {
     
     /// Remove a previously cast vote to remove a validator
     UnvoteRemove {
+        /// Config account address
+        config: String,
         /// Validator identity address
         validator_address: String,
         /// Stake pool address that cast the original vote
@@ -76,6 +115,8 @@ pub enum Commands {
     
     /// Create a delegation from stake pool manager to another authority
     Delegate {
+        /// Config account address
+        config: String,
         /// Stake pool address
         stake_pool: String,
         /// Address to delegate authority to
@@ -90,6 +131,8 @@ pub enum Commands {
     
     /// Remove a delegation
     Undelegate {
+        /// Config account address
+        config: String,
         /// Stake pool address
         stake_pool: String,
         /// Output format: 'execute' (default) to execute the transaction, or 'base58' to serialize and print the transaction in base58 format

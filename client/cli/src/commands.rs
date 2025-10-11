@@ -26,13 +26,13 @@ pub fn run_command(cli: Cli) -> Result<()> {
         Commands::List => {
             list_blacklisted_validators(&cli.rpc, &program_id)?;
         }
-        Commands::Delegate { stake_pool, delegate, output, manager } => {
+        Commands::Delegate { config, stake_pool, delegate, output, manager } => {
             // Handle delegate command separately to support base58 output without keypair
-            handle_delegate_command(&cli.rpc, &program_id, stake_pool, delegate, output, manager, cli.keypair)?;
+            handle_delegate_command(&cli.rpc, &program_id, config, stake_pool, delegate, output, manager, cli.keypair)?;
         }
-        Commands::Undelegate { stake_pool, output, manager } => {
+        Commands::Undelegate { config, stake_pool, output, manager } => {
             // Handle undelegate command separately to support base58 output without keypair
-            handle_undelegate_command(&cli.rpc, &program_id, stake_pool, output, manager, cli.keypair)?;
+            handle_undelegate_command(&cli.rpc, &program_id, config, stake_pool, output, manager, cli.keypair)?;
         }
         _ => {
             // For commands that require a keypair
@@ -107,10 +107,98 @@ fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair, prog
     let cu = 1_000_000;
 
     match command {
-        Commands::VoteAdd { validator_address, stake_pool, reason, delegation } => {
+        Commands::CreateConfig { config, min_tvl, allowed_programs } => {
+            println!("Executing CreateConfig");
+
+            // Parse config address (should be a keypair file path)
+            let config_keypair = read_keypair_file(&config)
+                .map_err(|e| anyhow::anyhow!("Failed to read config keypair file: {}", e))?;
+
+            // Parse allowed programs
+            let allowed_program_pubkeys: Result<Vec<Pubkey>> = allowed_programs
+                .iter()
+                .map(|p| Pubkey::from_str(p).context(format!("Invalid program address: {}", p)))
+                .collect();
+            let allowed_program_pubkeys = allowed_program_pubkeys?;
+
+            let signature = program
+                .request()
+                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
+                .signer(&config_keypair)
+                .accounts(validator_blacklist::accounts::InitConfig {
+                    config: config_keypair.pubkey(),
+                    admin: keypair.pubkey(),
+                    system_program: system_program::id(),
+                })
+                .args(validator_blacklist::instruction::InitConfig {
+                    min_tvl,
+                    allowed_programs: allowed_program_pubkeys,
+                })
+                .send()?;
+
+            println!("CreateConfig transaction sent: {}", signature);
+            println!("Config account: {}", config_keypair.pubkey());
+        },
+        Commands::UpdateConfig { config, min_tvl, allowed_programs } => {
+            println!("Executing UpdateConfig");
+
+            let config_pubkey = Pubkey::from_str(&config)
+                .context("Invalid config address")?;
+
+            // Parse allowed programs if provided
+            let allowed_program_pubkeys = if let Some(programs) = allowed_programs {
+                let pubkeys: Result<Vec<Pubkey>> = programs
+                    .iter()
+                    .map(|p| Pubkey::from_str(p).context(format!("Invalid program address: {}", p)))
+                    .collect();
+                Some(pubkeys?)
+            } else {
+                None
+            };
+
+            let signature = program
+                .request()
+                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
+                .accounts(validator_blacklist::accounts::UpdateConfig {
+                    config: config_pubkey,
+                    admin: keypair.pubkey(),
+                })
+                .args(validator_blacklist::instruction::UpdateConfig {
+                    min_tvl,
+                    allowed_programs: allowed_program_pubkeys,
+                })
+                .send()?;
+
+            println!("UpdateConfig transaction sent: {}", signature);
+        },
+        Commands::UpdateConfigAdmin { config, new_admin } => {
+            println!("Executing UpdateConfigAdmin");
+
+            let config_pubkey = Pubkey::from_str(&config)
+                .context("Invalid config address")?;
+            let new_admin_pubkey = Pubkey::from_str(&new_admin)
+                .context("Invalid new admin address")?;
+
+            let signature = program
+                .request()
+                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
+                .accounts(validator_blacklist::accounts::UpdateConfigAdmin {
+                    config: config_pubkey,
+                    admin: keypair.pubkey(),
+                })
+                .args(validator_blacklist::instruction::UpdateConfigAdmin {
+                    new_admin: new_admin_pubkey,
+                })
+                .send()?;
+
+            println!("UpdateConfigAdmin transaction sent: {}", signature);
+        },
+        Commands::VoteAdd { config, validator_address, stake_pool, reason, delegation } => {
             println!("Executing VoteAdd for validator: {}", validator_address);
             
             // Parse string arguments to Pubkey
+            let config_pubkey = Pubkey::from_str(&config)
+                .context("Invalid config address")?;
             let validator_pubkey = Pubkey::from_str(&validator_address)
                 .context("Invalid validator address")?;
             let stake_pool_pubkey = Pubkey::from_str(&stake_pool)
@@ -121,58 +209,50 @@ fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair, prog
                 None
             };
             
-            // Calculate PDAs
+            // Calculate PDAs with config seed
             let (blacklist_pda, _) = Pubkey::find_program_address(
-                &[b"blacklist", validator_pubkey.as_ref()],
+                &[b"blacklist", config_pubkey.as_ref(), validator_pubkey.as_ref()],
                 program_id,
             );
             
-            let authority = delegation_pubkey.unwrap_or(keypair.pubkey());
             let (vote_add_pda, _) = Pubkey::find_program_address(
-                &[b"vote_add", authority.as_ref(), validator_pubkey.as_ref()],
+                &[b"vote_add", config_pubkey.as_ref(), stake_pool_pubkey.as_ref(), validator_pubkey.as_ref()],
                 program_id,
             );
 
-            let mut request = program
+            let delegation_pda = delegation_pubkey.map(|_| {
+                Pubkey::find_program_address(
+                    &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
+                    program_id,
+                ).0
+            });
+
+            let signature = program
                 .request()
                 .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
                 .accounts(validator_blacklist::accounts::VoteAdd {
+                    config: config_pubkey,
+                    stake_pool: stake_pool_pubkey,
                     blacklist: blacklist_pda,
                     vote_add: vote_add_pda,
-                    stake_pool: stake_pool_pubkey,
-                    authority,
-                    delegation: None,
+                    delegation: delegation_pda,
+                    authority: keypair.pubkey(),
                     system_program: system_program::id(),
                 })
                 .args(validator_blacklist::instruction::VoteAdd {
                     validator_identity_address: validator_pubkey,
                     reason,
-                });
+                })
+                .send()?;
 
-
-            // Add delegation account if provided
-            if let Some(_delegation_addr) = delegation_pubkey {
-                let (delegation_pda, _) = Pubkey::find_program_address(
-                    &[b"delegation", stake_pool_pubkey.as_ref(), authority.as_ref()],
-                    program_id,
-                );
-                request = request.accounts(validator_blacklist::accounts::VoteAdd {
-                    blacklist: blacklist_pda,
-                    vote_add: vote_add_pda,
-                    stake_pool: stake_pool_pubkey,
-                    authority,
-                    delegation: Some(delegation_pda),
-                    system_program: system_program::id(),
-                });
-            }
-
-            let signature = request.send()?;
             println!("Vote to add transaction sent: {}", signature);
         },
-        Commands::VoteRemove { validator_address, stake_pool, reason, delegation } => {
+        Commands::VoteRemove { config, validator_address, stake_pool, reason, delegation } => {
             println!("Executing VoteRemove for validator: {}", validator_address);
             
             // Parse string arguments to Pubkey
+            let config_pubkey = Pubkey::from_str(&config)
+                .context("Invalid config address")?;
             let validator_pubkey = Pubkey::from_str(&validator_address)
                 .context("Invalid validator address")?;
             let stake_pool_pubkey = Pubkey::from_str(&stake_pool)
@@ -183,56 +263,50 @@ fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair, prog
                 None
             };
             
+            // Calculate PDAs with config seed
             let (blacklist_pda, _) = Pubkey::find_program_address(
-                &[b"blacklist", validator_pubkey.as_ref()],
+                &[b"blacklist", config_pubkey.as_ref(), validator_pubkey.as_ref()],
                 program_id,
             );
             
-            let authority = delegation_pubkey.unwrap_or(keypair.pubkey());
             let (vote_remove_pda, _) = Pubkey::find_program_address(
-                &[b"vote_remove", authority.as_ref(), validator_pubkey.as_ref()],
+                &[b"vote_remove", config_pubkey.as_ref(), stake_pool_pubkey.as_ref(), validator_pubkey.as_ref()],
                 program_id,
             );
 
-            let mut request = program
+            let delegation_pda = delegation_pubkey.map(|_| {
+                Pubkey::find_program_address(
+                    &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
+                    program_id,
+                ).0
+            });
+
+            let signature = program
                 .request()
                 .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
                 .accounts(validator_blacklist::accounts::VoteRemove {
+                    config: config_pubkey,
+                    stake_pool: stake_pool_pubkey,
                     blacklist: blacklist_pda,
                     vote_remove: vote_remove_pda,
-                    stake_pool: stake_pool_pubkey,
-                    authority,
-                    delegation: None,
+                    delegation: delegation_pda,
+                    authority: keypair.pubkey(),
                     system_program: system_program::id(),
                 })
                 .args(validator_blacklist::instruction::VoteRemove {
                     validator_identity_address: validator_pubkey,
                     reason,
-                });
+                })
+                .send()?;
 
-            // Add delegation account if provided
-            if let Some(_delegation_addr) = delegation_pubkey {
-                let (delegation_pda, _) = Pubkey::find_program_address(
-                    &[b"delegation", stake_pool_pubkey.as_ref(), authority.as_ref()],
-                    program_id,
-                );
-                request = request.accounts(validator_blacklist::accounts::VoteRemove {
-                    blacklist: blacklist_pda,
-                    vote_remove: vote_remove_pda,
-                    stake_pool: stake_pool_pubkey,
-                    authority,
-                    delegation: Some(delegation_pda),
-                    system_program: system_program::id(),
-                });
-            }
-
-            let signature = request.send()?;
             println!("Vote to remove transaction sent: {}", signature);
         },
-        Commands::UnvoteAdd { validator_address, stake_pool, delegation } => {
+        Commands::UnvoteAdd { config, validator_address, stake_pool, delegation } => {
             println!("Executing UnvoteAdd for validator: {}", validator_address);
             
             // Parse string arguments to Pubkey
+            let config_pubkey = Pubkey::from_str(&config)
+                .context("Invalid config address")?;
             let validator_pubkey = Pubkey::from_str(&validator_address)
                 .context("Invalid validator address")?;
             let stake_pool_pubkey = Pubkey::from_str(&stake_pool)
@@ -243,53 +317,48 @@ fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair, prog
                 None
             };
             
+            // Calculate PDAs with config seed
             let (blacklist_pda, _) = Pubkey::find_program_address(
-                &[b"blacklist", validator_pubkey.as_ref()],
+                &[b"blacklist", config_pubkey.as_ref(), validator_pubkey.as_ref()],
                 program_id,
             );
             
-            let authority = delegation_pubkey.unwrap_or(keypair.pubkey());
             let (vote_add_pda, _) = Pubkey::find_program_address(
-                &[b"vote_add", authority.as_ref(), validator_pubkey.as_ref()],
+                &[b"vote_add", config_pubkey.as_ref(), stake_pool_pubkey.as_ref(), validator_pubkey.as_ref()],
                 program_id,
             );
 
-            let mut request = program
+            let delegation_pda = delegation_pubkey.map(|_| {
+                Pubkey::find_program_address(
+                    &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
+                    program_id,
+                ).0
+            });
+
+            let signature = program
                 .request()
                 .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
                 .accounts(validator_blacklist::accounts::UnvoteAdd {
+                    config: config_pubkey,
+                    stake_pool: stake_pool_pubkey,
                     blacklist: blacklist_pda,
                     vote_add: vote_add_pda,
-                    stake_pool: stake_pool_pubkey,
-                    authority,
-                    delegation: None,
+                    delegation: delegation_pda,
+                    authority: keypair.pubkey(),
                 })
                 .args(validator_blacklist::instruction::UnvoteAdd {
                     validator_identity_address: validator_pubkey,
-                });
+                })
+                .send()?;
 
-            // Add delegation account if provided
-            if let Some(_delegation_addr) = delegation_pubkey {
-                let (delegation_pda, _) = Pubkey::find_program_address(
-                    &[b"delegation", stake_pool_pubkey.as_ref(), authority.as_ref()],
-                    program_id,
-                );
-                request = request.accounts(validator_blacklist::accounts::UnvoteAdd {
-                    blacklist: blacklist_pda,
-                    vote_add: vote_add_pda,
-                    stake_pool: stake_pool_pubkey,
-                    authority,
-                    delegation: Some(delegation_pda),
-                });
-            }
-
-            let signature = request.send()?;
             println!("Unvote add transaction sent: {}", signature);
         },
-        Commands::UnvoteRemove { validator_address, stake_pool, delegation } => {
+        Commands::UnvoteRemove { config, validator_address, stake_pool, delegation } => {
             println!("Executing UnvoteRemove for validator: {}", validator_address);
             
             // Parse string arguments to Pubkey
+            let config_pubkey = Pubkey::from_str(&config)
+                .context("Invalid config address")?;
             let validator_pubkey = Pubkey::from_str(&validator_address)
                 .context("Invalid validator address")?;
             let stake_pool_pubkey = Pubkey::from_str(&stake_pool)
@@ -300,47 +369,40 @@ fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair, prog
                 None
             };
             
+            // Calculate PDAs with config seed
             let (blacklist_pda, _) = Pubkey::find_program_address(
-                &[b"blacklist", validator_pubkey.as_ref()],
+                &[b"blacklist", config_pubkey.as_ref(), validator_pubkey.as_ref()],
                 program_id,
             );
             
-            let authority = delegation_pubkey.unwrap_or(keypair.pubkey());
             let (vote_remove_pda, _) = Pubkey::find_program_address(
-                &[b"vote_remove", authority.as_ref(), validator_pubkey.as_ref()],
+                &[b"vote_remove", config_pubkey.as_ref(), stake_pool_pubkey.as_ref(), validator_pubkey.as_ref()],
                 program_id,
             );
 
-            let mut request = program
+            let delegation_pda = delegation_pubkey.map(|_| {
+                Pubkey::find_program_address(
+                    &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
+                    program_id,
+                ).0
+            });
+
+            let signature = program
                 .request()
                 .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
                 .accounts(validator_blacklist::accounts::UnvoteRemove {
+                    config: config_pubkey,
+                    stake_pool: stake_pool_pubkey,
                     blacklist: blacklist_pda,
                     vote_remove: vote_remove_pda,
-                    stake_pool: stake_pool_pubkey,
-                    authority,
-                    delegation: None,
+                    delegation: delegation_pda,
+                    authority: keypair.pubkey(),
                 })
                 .args(validator_blacklist::instruction::UnvoteRemove {
                     validator_identity_address: validator_pubkey,
-                });
+                })
+                .send()?;
 
-            // Add delegation account if provided
-            if let Some(_delegation_addr) = delegation_pubkey {
-                let (delegation_pda, _) = Pubkey::find_program_address(
-                    &[b"delegation", stake_pool_pubkey.as_ref(), authority.as_ref()],
-                    program_id,
-                );
-                request = request.accounts(validator_blacklist::accounts::UnvoteRemove {
-                    blacklist: blacklist_pda,
-                    vote_remove: vote_remove_pda,
-                    stake_pool: stake_pool_pubkey,
-                    authority,
-                    delegation: Some(delegation_pda),
-                });
-            }
-
-            let signature = request.send()?;
             println!("Unvote remove transaction sent: {}", signature);
         },
         Commands::List | Commands::Delegate { .. } | Commands::Undelegate { .. } => {
@@ -351,8 +413,10 @@ fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair, prog
     Ok(())
 }
 
-fn handle_delegate_command(rpc_url: &str, program_id: &Pubkey, stake_pool: String, delegate: String, output: String, manager: Option<String>, keypair_option: Option<String>) -> Result<()> {
+fn handle_delegate_command(rpc_url: &str, program_id: &Pubkey, config: String, stake_pool: String, delegate: String, output: String, manager: Option<String>, keypair_option: Option<String>) -> Result<()> {
     // Parse string arguments to Pubkey
+    let config_pubkey = Pubkey::from_str(&config)
+        .context("Invalid config address")?;
     let stake_pool_pubkey = Pubkey::from_str(&stake_pool)
         .context("Invalid stake pool address")?;
     let delegate_pubkey = Pubkey::from_str(&delegate)
@@ -374,7 +438,7 @@ fn handle_delegate_command(rpc_url: &str, program_id: &Pubkey, stake_pool: Strin
             let cu = 1_000_000;
 
             let (delegation_pda, _) = Pubkey::find_program_address(
-                &[b"delegation", stake_pool_pubkey.as_ref(), keypair.pubkey().as_ref()],
+                &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
                 program_id,
             );
 
@@ -382,8 +446,9 @@ fn handle_delegate_command(rpc_url: &str, program_id: &Pubkey, stake_pool: Strin
                 .request()
                 .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
                 .accounts(validator_blacklist::accounts::Delegate {
-                    delegation: delegation_pda,
+                    config: config_pubkey,
                     stake_pool: stake_pool_pubkey,
+                    delegation: delegation_pda,
                     manager: keypair.pubkey(),
                     delegate: delegate_pubkey,
                     system_program: system_program::id(),
@@ -409,15 +474,16 @@ fn handle_delegate_command(rpc_url: &str, program_id: &Pubkey, stake_pool: Strin
             let program = client.program(*program_id)?;
 
             let (delegation_pda, _) = Pubkey::find_program_address(
-                &[b"delegation", stake_pool_pubkey.as_ref(), manager_pubkey.as_ref()],
+                &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
                 program_id,
             );
 
             let ixs = program
                 .request()
                 .accounts(validator_blacklist::accounts::Delegate {
-                    delegation: delegation_pda,
+                    config: config_pubkey,
                     stake_pool: stake_pool_pubkey,
+                    delegation: delegation_pda,
                     manager: manager_pubkey,
                     delegate: delegate_pubkey,
                     system_program: system_program::id(),
@@ -440,8 +506,10 @@ fn handle_delegate_command(rpc_url: &str, program_id: &Pubkey, stake_pool: Strin
     Ok(())
 }
 
-fn handle_undelegate_command(rpc_url: &str, program_id: &Pubkey, stake_pool: String, output: String, manager: Option<String>, keypair_option: Option<String>) -> Result<()> {
+fn handle_undelegate_command(rpc_url: &str, program_id: &Pubkey, config: String, stake_pool: String, output: String, manager: Option<String>, keypair_option: Option<String>) -> Result<()> {
     // Parse string arguments to Pubkey
+    let config_pubkey = Pubkey::from_str(&config)
+        .context("Invalid config address")?;
     let stake_pool_pubkey = Pubkey::from_str(&stake_pool)
         .context("Invalid stake pool address")?;
 
@@ -461,7 +529,7 @@ fn handle_undelegate_command(rpc_url: &str, program_id: &Pubkey, stake_pool: Str
             let cu = 1_000_000;
 
             let (delegation_pda, _) = Pubkey::find_program_address(
-                &[b"delegation", stake_pool_pubkey.as_ref(), keypair.pubkey().as_ref()],
+                &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
                 program_id,
             );
 
@@ -469,6 +537,7 @@ fn handle_undelegate_command(rpc_url: &str, program_id: &Pubkey, stake_pool: Str
                 .request()
                 .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
                 .accounts(validator_blacklist::accounts::Undelegate {
+                    config: config_pubkey,
                     delegation: delegation_pda,
                     stake_pool: stake_pool_pubkey,
                     manager: keypair.pubkey(),
@@ -494,13 +563,14 @@ fn handle_undelegate_command(rpc_url: &str, program_id: &Pubkey, stake_pool: Str
             let program = client.program(*program_id)?;
 
             let (delegation_pda, _) = Pubkey::find_program_address(
-                &[b"delegation", stake_pool_pubkey.as_ref(), manager_pubkey.as_ref()],
+                &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
                 program_id,
             );
 
             let ixs = program
                 .request()
                 .accounts(validator_blacklist::accounts::Undelegate {
+                    config: config_pubkey,
                     delegation: delegation_pda,
                     stake_pool: stake_pool_pubkey,
                     manager: manager_pubkey,
