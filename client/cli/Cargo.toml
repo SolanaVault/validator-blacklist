@@ -18,3 +18,4 @@ anchor-lang = "0.31"
 borsh = "1.0"
 bs58 = "0.5"
 validator_blacklist = { path = "../../programs/validator_blacklist", features = ["no-entrypoint"] }
+bincode = "1.3.3"
