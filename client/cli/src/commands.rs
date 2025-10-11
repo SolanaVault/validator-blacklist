@@ -5,6 +5,7 @@ use anchor_client::solana_sdk::{
     commitment_config::CommitmentConfig,
     signer::Signer,
 };
+use solana_sdk::transaction::Transaction;
 use anchor_client::solana_account_decoder::UiAccountEncoding;
 use anchor_client::{Client, Cluster};
 use anchor_lang::{AccountDeserialize, Discriminator};
@@ -25,12 +26,20 @@ pub fn run_command(cli: Cli) -> Result<()> {
         Commands::List => {
             list_blacklisted_validators(&cli.rpc, &program_id)?;
         }
+        Commands::Delegate { stake_pool, delegate, output, manager } => {
+            // Handle delegate command separately to support base58 output without keypair
+            handle_delegate_command(&cli.rpc, &program_id, stake_pool, delegate, output, manager, cli.keypair)?;
+        }
+        Commands::Undelegate { stake_pool, output, manager } => {
+            // Handle undelegate command separately to support base58 output without keypair
+            handle_undelegate_command(&cli.rpc, &program_id, stake_pool, output, manager, cli.keypair)?;
+        }
         _ => {
             // For commands that require a keypair
             let keypair_path = cli.keypair
                 .context("Keypair path is required for this command")?;
 
-            let keypair =read_keypair_file(&keypair_path)
+            let keypair = read_keypair_file(&keypair_path)
                     .map_err(|e| anyhow::anyhow!("Failed to read keypair file: {}", e))?;
 
             execute_instruction(cli.command, &cli.rpc, &keypair, &program_id)?;
@@ -334,15 +343,36 @@ fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair, prog
             let signature = request.send()?;
             println!("Unvote remove transaction sent: {}", signature);
         },
-        Commands::Delegate { stake_pool, delegate } => {
-            println!("Executing Delegate for stake pool: {}", stake_pool);
-            
-            // Parse string arguments to Pubkey
-            let stake_pool_pubkey = Pubkey::from_str(&stake_pool)
-                .context("Invalid stake pool address")?;
-            let delegate_pubkey = Pubkey::from_str(&delegate)
-                .context("Invalid delegate address")?;
-            
+        Commands::List | Commands::Delegate { .. } | Commands::Undelegate { .. } => {
+            unreachable!()
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_delegate_command(rpc_url: &str, program_id: &Pubkey, stake_pool: String, delegate: String, output: String, manager: Option<String>, keypair_option: Option<String>) -> Result<()> {
+    // Parse string arguments to Pubkey
+    let stake_pool_pubkey = Pubkey::from_str(&stake_pool)
+        .context("Invalid stake pool address")?;
+    let delegate_pubkey = Pubkey::from_str(&delegate)
+        .context("Invalid delegate address")?;
+
+    match output.as_str() {
+        "execute" => {
+            // Execution mode - requires keypair
+            let keypair_path = keypair_option
+                .context("Keypair path is required for execute mode")?;
+
+            let keypair = read_keypair_file(&keypair_path)
+                    .map_err(|e| anyhow::anyhow!("Failed to read keypair file: {}", e))?;
+
+            // Create the Anchor client
+            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
+            let client = Client::new_with_options(cluster, Rc::new(keypair.insecure_clone()), CommitmentConfig::confirmed());
+            let program = client.program(*program_id)?;
+            let cu = 1_000_000;
+
             let (delegation_pda, _) = Pubkey::find_program_address(
                 &[b"delegation", stake_pool_pubkey.as_ref(), keypair.pubkey().as_ref()],
                 program_id,
@@ -363,13 +393,73 @@ fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair, prog
 
             println!("Delegate transaction sent: {}", signature);
         },
-        Commands::Undelegate { stake_pool } => {
-            println!("Executing Undelegate for stake pool: {}", stake_pool);
-            
-            // Parse string arguments to Pubkey
-            let stake_pool_pubkey = Pubkey::from_str(&stake_pool)
-                .context("Invalid stake pool address")?;
-            
+        "base58" => {
+            // Base58 serialization mode - requires manager pubkey
+            let manager_pubkey = manager
+                .context("Manager pubkey is required when output is base58")?;
+            let manager_pubkey = Pubkey::from_str(&manager_pubkey)
+                .context("Invalid manager pubkey")?;
+
+            // Create a dummy keypair for the client (won't be used for signing)
+            let dummy_keypair = Keypair::new();
+
+            // Create the Anchor client
+            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
+            let client = Client::new_with_options(cluster, Rc::new(dummy_keypair), CommitmentConfig::confirmed());
+            let program = client.program(*program_id)?;
+
+            let (delegation_pda, _) = Pubkey::find_program_address(
+                &[b"delegation", stake_pool_pubkey.as_ref(), manager_pubkey.as_ref()],
+                program_id,
+            );
+
+            let ixs = program
+                .request()
+                .accounts(validator_blacklist::accounts::Delegate {
+                    delegation: delegation_pda,
+                    stake_pool: stake_pool_pubkey,
+                    manager: manager_pubkey,
+                    delegate: delegate_pubkey,
+                    system_program: system_program::id(),
+                })
+                .args(validator_blacklist::instruction::Delegate {})
+                .instructions()?;
+            let tx = Transaction::new_with_payer(&ixs, Some(&manager_pubkey));
+            // Serialize transaction to base58
+            let serialized = bincode::serialize(&tx)
+                .context("Failed to serialize transaction")?;
+            let base58_tx = bs58::encode(serialized).into_string();
+
+            println!("{}", base58_tx);
+        },
+        _ => {
+            return Err(anyhow::anyhow!("Invalid output format. Use 'execute' or 'base58'"));
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_undelegate_command(rpc_url: &str, program_id: &Pubkey, stake_pool: String, output: String, manager: Option<String>, keypair_option: Option<String>) -> Result<()> {
+    // Parse string arguments to Pubkey
+    let stake_pool_pubkey = Pubkey::from_str(&stake_pool)
+        .context("Invalid stake pool address")?;
+
+    match output.as_str() {
+        "execute" => {
+            // Execution mode - requires keypair
+            let keypair_path = keypair_option
+                .context("Keypair path is required for execute mode")?;
+
+            let keypair = read_keypair_file(&keypair_path)
+                    .map_err(|e| anyhow::anyhow!("Failed to read keypair file: {}", e))?;
+
+            // Create the Anchor client
+            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
+            let client = Client::new_with_options(cluster, Rc::new(keypair.insecure_clone()), CommitmentConfig::confirmed());
+            let program = client.program(*program_id)?;
+            let cu = 1_000_000;
+
             let (delegation_pda, _) = Pubkey::find_program_address(
                 &[b"delegation", stake_pool_pubkey.as_ref(), keypair.pubkey().as_ref()],
                 program_id,
@@ -388,8 +478,45 @@ fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair, prog
 
             println!("Undelegate transaction sent: {}", signature);
         },
-        Commands::List => {
-            unreachable!()
+        "base58" => {
+            // Base58 serialization mode - requires manager pubkey
+            let manager_pubkey = manager
+                .context("Manager pubkey is required when output is base58")?;
+            let manager_pubkey = Pubkey::from_str(&manager_pubkey)
+                .context("Invalid manager pubkey")?;
+
+            // Create a dummy keypair for the client (won't be used for signing)
+            let dummy_keypair = Keypair::new();
+
+            // Create the Anchor client
+            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
+            let client = Client::new_with_options(cluster, Rc::new(dummy_keypair), CommitmentConfig::confirmed());
+            let program = client.program(*program_id)?;
+
+            let (delegation_pda, _) = Pubkey::find_program_address(
+                &[b"delegation", stake_pool_pubkey.as_ref(), manager_pubkey.as_ref()],
+                program_id,
+            );
+
+            let ixs = program
+                .request()
+                .accounts(validator_blacklist::accounts::Undelegate {
+                    delegation: delegation_pda,
+                    stake_pool: stake_pool_pubkey,
+                    manager: manager_pubkey,
+                })
+                .args(validator_blacklist::instruction::Undelegate {})
+                .instructions()?;
+            let tx = Transaction::new_with_payer(&ixs, Some(&manager_pubkey));
+            // Serialize transaction to base58
+            let serialized = bincode::serialize(&tx)
+                .context("Failed to serialize transaction")?;
+            let base58_tx = bs58::encode(serialized).into_string();
+
+            println!("{}", base58_tx);
+        },
+        _ => {
+            return Err(anyhow::anyhow!("Invalid output format. Use 'execute' or 'base58'"));
         }
     }
 

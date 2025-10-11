@@ -91,16 +91,17 @@ Remove a delegation:
 validator-blacklist-cli -p <PROGRAM_ID> -k <KEYPAIR> undelegate <STAKE_POOL>
 ```
 
-## Examples
-
-### List all blacklisted validators on devnet:
+For multisig scenarios, generate a base58 transaction that can be imported into Squads:
 
 ```bash
-validator-blacklist-cli \
-  --rpc-url https://api.devnet.solana.com \
-  --program-id YourProgramIdHere \
-  list
+validator-blacklist-cli -p <PROGRAM_ID> undelegate <STAKE_POOL> --output base58 --manager <MANAGER_PUBKEY>
 ```
+
+#### Base58 Transaction Output
+
+Both `delegate` and `undelegate` commands support `--output base58` mode for multisig workflows. This generates a serialized transaction that can be imported into Squads or other multisig solutions.
+
+## Examples
 
 ### Vote to blacklist a validator:
 
@@ -125,4 +126,36 @@ validator-blacklist-cli \
   delegate \
   StakePoolAddressHere \
   DelegateAddressHere
+```
+
+### Remove delegation (direct execution):
+
+```bash
+cargo run -p validator-blacklist-cli -- \
+  -p <PROGRAM_ID> \
+  -k ~/.config/solana/id.json \
+  undelegate <STAKE_POOL>
+```
+
+### Generate base58 transaction for Squads multisig:
+
+```bash
+cargo run -p validator-blacklist-cli -- \
+  -p <PROGRAM_ID> \
+  delegate \
+  --manager <MANAGER_PUBKEY> \
+  --output base58 \
+  <STAKE_POOL> \
+  <DELEGATE_ADDRESS>
+```
+
+**Note:** The base58 output can be imported directly into Squads by pasting the generated string into the "Import Transaction" feature.
+
+### List all blacklisted validators on devnet:
+
+```bash
+validator-blacklist-cli \
+  --rpc-url https://api.devnet.solana.com \
+  --program-id YourProgramIdHere \
+  list
 ```
