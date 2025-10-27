@@ -1,102 +1,145 @@
 use clap::{Parser, Subcommand};
 
+const DEFAULT_CONFIG: &str = "8wXtPM3EHPu4BKXpBCrWXqhzPc9vS2HSkD9veATmU4Yq";
+const DEFAULT_PROGRAM_ID: &str = "Fu4zvEKjgxWjaQifp7fyghKJfk6HzUCaJRvoGffJBm6Q";
+
 #[derive(Parser)]
 #[command(name = "validator-blacklist-cli")]
-#[command(about = "A CLI tool for interacting with the Solana validator blacklist program")]
-
+#[command(about = "A CLI for managing validator blacklists")]
 pub struct Cli {
-    /// RPC URL for Solana cluster
-    #[arg(short('u'), long, default_value = "https://api.mainnet-beta.solana.com")]
+    #[arg(short, long, default_value = "http://localhost:8899")]
     pub rpc: String,
 
-    /// Program ID of the validator blacklist program
-    #[arg(short, long)]
-    pub program_id: String,
-
-    /// Keypair file path for the authority
     #[arg(short, long)]
     pub keypair: Option<String>,
+
+    #[arg(short, long, default_value = DEFAULT_PROGRAM_ID)]
+    pub program_id: String,
 
     #[command(subcommand)]
     pub command: Commands,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand)]
 pub enum Commands {
-    /// List all blacklisted validators and their vote tallies
+    /// List all blacklisted validators
     List,
+    
+    /// Create a new config account
+    CreateConfig {
+        #[arg(short, long, default_value = DEFAULT_CONFIG)]
+        config: String,
+        #[arg(short, long)]
+        min_tvl: u64,
+        #[arg(short, long, value_delimiter = ',')]
+        allowed_programs: Vec<String>,
+    },
+    
+    /// Update an existing config account
+    UpdateConfig {
+        #[arg(short, long, default_value = DEFAULT_CONFIG)]
+        config: String,
+        #[arg(short, long)]
+        min_tvl: Option<u64>,
+        #[arg(short, long, value_delimiter = ',')]
+        allowed_programs: Option<Vec<String>>,
+    },
+    
+    /// Update config admin
+    UpdateConfigAdmin {
+        #[arg(short, long, default_value = DEFAULT_CONFIG)]
+        config: String,
+        #[arg(short, long)]
+        new_admin: String,
+    },
     
     /// Vote to add a validator to the blacklist
     VoteAdd {
-        /// Validator identity address to blacklist
+        #[arg(short, long, default_value = DEFAULT_CONFIG)]
+        config: String,
+        #[arg(short, long)]
         validator_address: String,
-        /// Stake pool address casting the vote
+        #[arg(short, long)]
         stake_pool: String,
-        /// Reason for blacklisting
+        #[arg(short, long)]
         reason: String,
-        /// Optional delegation address if using delegated authority
-        #[arg(long)]
+        #[arg(short, long)]
         delegation: Option<String>,
     },
     
     /// Vote to remove a validator from the blacklist
     VoteRemove {
-        /// Validator identity address to remove from blacklist
+        #[arg(short, long, default_value = DEFAULT_CONFIG)]
+        config: String,
+        #[arg(short, long)]
         validator_address: String,
-        /// Stake pool address casting the vote
+        #[arg(short, long)]
         stake_pool: String,
-        /// Reason for removal
+        #[arg(short, long)]
         reason: String,
-        /// Optional delegation address if using delegated authority
-        #[arg(long)]
+        #[arg(short, long)]
         delegation: Option<String>,
     },
     
-    /// Remove a previously cast vote to add a validator
+    /// Unvote add (remove a previous add vote)
     UnvoteAdd {
-        /// Validator identity address
+        #[arg(short, long, default_value = DEFAULT_CONFIG)]
+        config: String,
+        #[arg(short, long)]
         validator_address: String,
-        /// Stake pool address that cast the original vote
+        #[arg(short, long)]
         stake_pool: String,
-        /// Optional delegation address if using delegated authority
-        #[arg(long)]
+        #[arg(short, long)]
         delegation: Option<String>,
     },
     
-    /// Remove a previously cast vote to remove a validator
+    /// Unvote remove (remove a previous remove vote)
     UnvoteRemove {
-        /// Validator identity address
+        #[arg(short, long, default_value = DEFAULT_CONFIG)]
+        config: String,
+        #[arg(short, long)]
         validator_address: String,
-        /// Stake pool address that cast the original vote
+        #[arg(short, long)]
         stake_pool: String,
-        /// Optional delegation address if using delegated authority
-        #[arg(long)]
+        #[arg(short, long)]
         delegation: Option<String>,
     },
     
-    /// Create a delegation from stake pool manager to another authority
+    /// Delegate authority to another account
     Delegate {
-        /// Stake pool address
+        #[arg(short, long, default_value = DEFAULT_CONFIG)]
+        config: String,
+        #[arg(short, long)]
         stake_pool: String,
-        /// Address to delegate authority to
+        #[arg(short, long)]
         delegate: String,
-        /// Output format: 'execute' (default) to execute the transaction, or 'base58' to serialize and print the transaction in base58 format
-        #[arg(long, default_value = "execute", help = "Output format: 'execute' (default) or 'base58'")]
+        #[arg(short = 'o', long, default_value = "execute")]
         output: String,
-        /// Manager pubkey (required when --output is 'base58'). When using base58 output, provide the manager's public key instead of using a keypair file
-        #[arg(long, help = "Manager pubkey (required when output is base58)")]
+        #[arg(short = 'M', long)]
         manager: Option<String>,
     },
     
-    /// Remove a delegation
+    /// Remove delegation (undelegate)
     Undelegate {
-        /// Stake pool address
+        #[arg(short, long, default_value = DEFAULT_CONFIG)]
+        config: String,
+        #[arg(short, long)]
         stake_pool: String,
-        /// Output format: 'execute' (default) to execute the transaction, or 'base58' to serialize and print the transaction in base58 format
-        #[arg(long, default_value = "execute", help = "Output format: 'execute' (default) or 'base58'")]
+        #[arg(short = 'o', long, default_value = "execute")]
         output: String,
-        /// Manager pubkey (required when --output is 'base58'). When using base58 output, provide the manager's public key instead of using a keypair file
-        #[arg(long, help = "Manager pubkey (required when output is base58)")]
+        #[arg(short = 'M', long)]
         manager: Option<String>,
+    },
+
+    /// Batch ban validators from a CSV file
+    BatchBan {
+        #[arg(short, long, default_value = DEFAULT_CONFIG)]
+        config: String,
+        #[arg(short, long)]
+        stake_pool: String,
+        #[arg(short = 'f', long)]
+        csv: String,
+        #[arg(short, long)]
+        delegation: Option<String>,
     },
 }
