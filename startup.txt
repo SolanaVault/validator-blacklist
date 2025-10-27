@@ -1,3 +1,9 @@
- cargo run -p validator-blacklist-cli -- --keypair ~/.config/solana/id.json --program-id C7662BVQCwLuorurd8vXohNczQuMHMhDqZ4JcMMge77d create-config config.json 0 SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy
+ --setup for local testing
+cargo run -p validator-blacklist-cli -- --keypair ~/.config/solana/id.json --program-id C7662BVQCwLuorurd8vXohNczQuMHMhDqZ4JcMMge77d create-config --config config.json --min-tvl 0 --allowed-programs SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy
 
-cargo run -p validator-blacklist-cli -- --keypair ~/.config/solana/id.json --program-id C7662BVQCwLuorurd8vXohNczQuMHMhDqZ4JcMMge77d delegate 8wXtPM3EHPu4BKXpBCrWXqhzPc9vS2HSkD9veATmU4Yq 3WMAq8fChhpU6bv1okGvAsvGvHWwWJCsjN3SzLm1qjcW  GHSSQJQQqExJ7fbUJwepSaJN35UKZF4vCJ3pXN3jTNYB
+cargo run -p validator-blacklist-cli -- --keypair ~/.config/solana/id.json --program-id C7662BVQCwLuorurd8vXohNczQu
+MHMhDqZ4JcMMge77d delegate --manager EVSZxFztintYTtF6xWGmR1Ap2n7aHyQFTWn8hcobyntw --stake-pool 3WMAq8fChhpU6bv1okGvAsvGvHWwWJCsjN3SzLm1qjcW --delegate GHSSQJQQqExJ7fbUJwepSaJN35UKZF4vCJ3pXN3jTNYB
+
+--delegate with squads
+cargo run -p validator-blacklist-cli -- --keypair ~/.config/solana/id.json --program-id Fu4zvEKjgxWjaQifp7fyghKJfk6
+HzUCaJRvoGffJBm6Q delegate --output base58 --config 8wXtPM3EHPu4BKXpBCrWXqhzPc9vS2HSkD9veATmU4Yq --stake-pool aero2ePURjuEgLKTzcUmF6RypBncBGd7pMUYCoSsVJ6 --delegate  GHSSQJQQqExJ7fbUJwepSaJN35UKZF4vCJ3pXN3jTNYB --manager aerorbeRSPU57GtKccocmjCbABfMQv5GcsXDy87LbMN
