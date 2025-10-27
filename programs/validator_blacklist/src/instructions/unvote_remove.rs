@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 use crate::authority_checks;
-use crate::stake_pool_helpers::{deserialize_stake_pool_with_checks, validate_stake_pool_config};
+use crate::stake_pool_helpers::{deserialize_stake_pool_with_checks};
 use crate::state::{Blacklist, VoteRemoveFromBlacklist, Delegation, Config};
 use crate::error::ValidatorBlacklistError;
 

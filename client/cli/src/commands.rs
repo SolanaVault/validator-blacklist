@@ -17,6 +17,7 @@ use solana_sdk_ids::system_program;
 use validator_blacklist::state::Blacklist;
 use std::str::FromStr;
 use std::rc::Rc;
+use anchor_lang::__private::base64;
 
 pub fn run_command(cli: Cli) -> Result<()> {
     let program_id = Pubkey::from_str(&cli.program_id)
@@ -27,22 +28,31 @@ pub fn run_command(cli: Cli) -> Result<()> {
             list_blacklisted_validators(&cli.rpc, &program_id)?;
         }
         Commands::Delegate { config, stake_pool, delegate, output, manager } => {
-            // Handle delegate command separately to support base58 output without keypair
             handle_delegate_command(&cli.rpc, &program_id, config, stake_pool, delegate, output, manager, cli.keypair)?;
         }
         Commands::Undelegate { config, stake_pool, output, manager } => {
-            // Handle undelegate command separately to support base58 output without keypair
             handle_undelegate_command(&cli.rpc, &program_id, config, stake_pool, output, manager, cli.keypair)?;
         }
-        _ => {
-            // For commands that require a keypair
-            let keypair_path = cli.keypair
-                .context("Keypair path is required for this command")?;
-
-            let keypair = read_keypair_file(&keypair_path)
-                    .map_err(|e| anyhow::anyhow!("Failed to read keypair file: {}", e))?;
-
-            execute_instruction(cli.command, &cli.rpc, &keypair, &program_id)?;
+        Commands::CreateConfig { config, min_tvl, allowed_programs, output, manager } => {
+            handle_create_config_command(&cli.rpc, &program_id, config, min_tvl, allowed_programs, output, manager, cli.keypair)?;
+        }
+        Commands::UpdateConfig { config, min_tvl, allowed_programs, output, manager } => {
+            handle_update_config_command(&cli.rpc, &program_id, config, min_tvl, allowed_programs, output, manager, cli.keypair)?;
+        }
+        Commands::UpdateConfigAdmin { config, new_admin, output, manager } => {
+            handle_update_config_admin_command(&cli.rpc, &program_id, config, new_admin, output, manager, cli.keypair)?;
+        }
+        Commands::VoteAdd { config, validator_address, stake_pool, reason, delegation, output, manager } => {
+            handle_vote_add_command(&cli.rpc, &program_id, config, validator_address, stake_pool, reason, delegation, output, manager, cli.keypair)?;
+        }
+        Commands::VoteRemove { config, validator_address, stake_pool, reason, delegation, output, manager } => {
+            handle_vote_remove_command(&cli.rpc, &program_id, config, validator_address, stake_pool, reason, delegation, output, manager, cli.keypair)?;
+        }
+        Commands::UnvoteAdd { config, validator_address, stake_pool, delegation, output, manager } => {
+            handle_unvote_add_command(&cli.rpc, &program_id, config, validator_address, stake_pool, delegation, output, manager, cli.keypair)?;
+        }
+        Commands::UnvoteRemove { config, validator_address, stake_pool, delegation, output, manager } => {
+            handle_unvote_remove_command(&cli.rpc, &program_id, config, validator_address, stake_pool, delegation, output, manager, cli.keypair)?;
         }
     }
 
@@ -99,31 +109,179 @@ fn list_blacklisted_validators(rpc_url: &str, program_id: &Pubkey) -> Result<()>
     Ok(())
 }
 
-fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair, program_id: &Pubkey) -> Result<()> {
-    // Create the Anchor client
-    let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
-    let client = Client::new_with_options(cluster, Rc::new(keypair.insecure_clone()), CommitmentConfig::confirmed());
-    let program = client.program(*program_id)?;
-    let cu = 1_000_000;
+fn handle_delegate_command(rpc_url: &str, program_id: &Pubkey, config: String, stake_pool: String, delegate: String, output: String, manager: Option<String>, keypair_option: Option<String>) -> Result<()> {
+    let config_pubkey = Pubkey::from_str(&config).context("Invalid config address")?;
+    let stake_pool_pubkey = Pubkey::from_str(&stake_pool).context("Invalid stake pool address")?;
+    let delegate_pubkey = Pubkey::from_str(&delegate).context("Invalid delegate address")?;
 
-    match command {
-        Commands::CreateConfig { config, min_tvl, allowed_programs } => {
-            println!("Executing CreateConfig");
+    match output.as_str() {
+        "execute" => {
+            let keypair_path = keypair_option.context("Keypair path is required for execute mode")?;
+            let keypair = read_keypair_file(&keypair_path)
+                .map_err(|e| anyhow::anyhow!("Failed to read keypair file: {}", e))?;
 
-            // Parse config address (should be a keypair file path)
-            let config_keypair = read_keypair_file(&config)
-                .map_err(|e| anyhow::anyhow!("Failed to read config keypair file: {}", e))?;
+            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
+            let client = Client::new_with_options(cluster, Rc::new(keypair.insecure_clone()), CommitmentConfig::confirmed());
+            let program = client.program(*program_id)?;
 
-            // Parse allowed programs
-            let allowed_program_pubkeys: Result<Vec<Pubkey>> = allowed_programs
-                .iter()
-                .map(|p| Pubkey::from_str(p).context(format!("Invalid program address: {}", p)))
-                .collect();
-            let allowed_program_pubkeys = allowed_program_pubkeys?;
+            let (delegation_pda, _) = Pubkey::find_program_address(
+                &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
+                program_id,
+            );
 
             let signature = program
                 .request()
-                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
+                .accounts(validator_blacklist::accounts::Delegate {
+                    config: config_pubkey,
+                    stake_pool: stake_pool_pubkey,
+                    delegation: delegation_pda,
+                    manager: keypair.pubkey(),
+                    delegate: delegate_pubkey,
+                    system_program: system_program::id(),
+                })
+                .args(validator_blacklist::instruction::Delegate {})
+                .send()?;
+
+            println!("Delegate transaction sent: {}", signature);
+        },
+        "base58" => {
+            let manager_pubkey = manager.context("Manager pubkey is required when output is base58")?;
+            let manager_pubkey = Pubkey::from_str(&manager_pubkey).context("Invalid manager pubkey")?;
+
+            let dummy_keypair = Keypair::new();
+            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
+            let client = Client::new_with_options(cluster, Rc::new(dummy_keypair), CommitmentConfig::confirmed());
+            let program = client.program(*program_id)?;
+
+            let (delegation_pda, _) = Pubkey::find_program_address(
+                &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
+                program_id,
+            );
+
+            let ixs = program
+                .request()
+                .accounts(validator_blacklist::accounts::Delegate {
+                    config: config_pubkey,
+                    stake_pool: stake_pool_pubkey,
+                    delegation: delegation_pda,
+                    manager: manager_pubkey,
+                    delegate: delegate_pubkey,
+                    system_program: system_program::id(),
+                })
+                .args(validator_blacklist::instruction::Delegate {})
+                .instructions()?;
+
+            let tx = Transaction::new_with_payer(&ixs, Some(&manager_pubkey));
+            let serialized = bincode::serialize(&tx).context("Failed to serialize transaction")?;
+            let base58_tx = bs58::encode(serialized.clone()).into_string();
+            let base64_tx = base64::encode(serialized);
+
+            println!("{}", base58_tx);
+            println!("Base64: {}", base64_tx);
+        },
+        _ => {
+            return Err(anyhow::anyhow!("Invalid output format. Use 'execute' or 'base58'"));
+        }
+    }
+
+    Ok(())
+}
+
+
+fn handle_undelegate_command(rpc_url: &str, program_id: &Pubkey, config: String, stake_pool: String, output: String, manager: Option<String>, keypair_option: Option<String>) -> Result<()> {
+    let config_pubkey = Pubkey::from_str(&config).context("Invalid config address")?;
+    let stake_pool_pubkey = Pubkey::from_str(&stake_pool).context("Invalid stake pool address")?;
+
+    match output.as_str() {
+        "execute" => {
+            let keypair_path = keypair_option.context("Keypair path is required for execute mode")?;
+            let keypair = read_keypair_file(&keypair_path)
+                .map_err(|e| anyhow::anyhow!("Failed to read keypair file: {}", e))?;
+
+            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
+            let client = Client::new_with_options(cluster, Rc::new(keypair.insecure_clone()), CommitmentConfig::confirmed());
+            let program = client.program(*program_id)?;
+
+            let (delegation_pda, _) = Pubkey::find_program_address(
+                &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
+                program_id,
+            );
+
+            let signature = program
+                .request()
+                .accounts(validator_blacklist::accounts::Undelegate {
+                    config: config_pubkey,
+                    stake_pool: stake_pool_pubkey,
+                    delegation: delegation_pda,
+                    manager: keypair.pubkey(),
+                })
+                .args(validator_blacklist::instruction::Undelegate {})
+                .send()?;
+
+            println!("Undelegate transaction sent: {}", signature);
+        },
+        "base58" => {
+            let manager_pubkey = manager.context("Manager pubkey is required when output is base58")?;
+            let manager_pubkey = Pubkey::from_str(&manager_pubkey).context("Invalid manager pubkey")?;
+
+            let dummy_keypair = Keypair::new();
+            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
+            let client = Client::new_with_options(cluster, Rc::new(dummy_keypair), CommitmentConfig::confirmed());
+            let program = client.program(*program_id)?;
+
+            let (delegation_pda, _) = Pubkey::find_program_address(
+                &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
+                program_id,
+            );
+
+            let ixs = program
+                .request()
+                .accounts(validator_blacklist::accounts::Undelegate {
+                    config: config_pubkey,
+                    stake_pool: stake_pool_pubkey,
+                    delegation: delegation_pda,
+                    manager: manager_pubkey,
+                })
+                .args(validator_blacklist::instruction::Undelegate {})
+                .instructions()?;
+
+            let tx = Transaction::new_with_payer(&ixs, Some(&manager_pubkey));
+            let serialized = bincode::serialize(&tx).context("Failed to serialize transaction")?;
+            let base58_tx = bs58::encode(serialized).into_string();
+
+            println!("{}", base58_tx);
+        },
+        _ => {
+            return Err(anyhow::anyhow!("Invalid output format. Use 'execute' or 'base58'"));
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_create_config_command(rpc_url: &str, program_id: &Pubkey, config: String, min_tvl: u64, allowed_programs: Vec<String>, output: String, manager: Option<String>, keypair_option: Option<String>) -> Result<()> {
+    let allowed_program_pubkeys: Result<Vec<Pubkey>> = allowed_programs
+        .iter()
+        .map(|p| Pubkey::from_str(p).context(format!("Invalid program address: {}", p)))
+        .collect();
+    let allowed_program_pubkeys = allowed_program_pubkeys?;
+
+    match output.as_str() {
+        "execute" => {
+            let keypair_path = keypair_option.context("Keypair path is required for execute mode")?;
+            let keypair = read_keypair_file(&keypair_path)
+                .map_err(|e| anyhow::anyhow!("Failed to read keypair file: {}", e))?;
+
+            let config_keypair = read_keypair_file(&config)
+                .map_err(|e| anyhow::anyhow!("Failed to read config keypair file: {}", e))?;
+
+            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
+            let client = Client::new_with_options(cluster, Rc::new(keypair.insecure_clone()), CommitmentConfig::confirmed());
+            let program = client.program(*program_id)?;
+
+            let signature = program
+                .request()
+                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(1_000_000))
                 .signer(&config_keypair)
                 .accounts(validator_blacklist::accounts::InitConfig {
                     config: config_keypair.pubkey(),
@@ -139,26 +297,73 @@ fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair, prog
             println!("CreateConfig transaction sent: {}", signature);
             println!("Config account: {}", config_keypair.pubkey());
         },
-        Commands::UpdateConfig { config, min_tvl, allowed_programs } => {
-            println!("Executing UpdateConfig");
+        "base58" => {
+            let manager_pubkey = manager.context("Manager pubkey is required when output is base58")?;
+            let manager_pubkey = Pubkey::from_str(&manager_pubkey).context("Invalid manager pubkey")?;
 
-            let config_pubkey = Pubkey::from_str(&config)
-                .context("Invalid config address")?;
+            let config_keypair = read_keypair_file(&config)
+                .map_err(|e| anyhow::anyhow!("Failed to read config keypair file: {}", e))?;
 
-            // Parse allowed programs if provided
-            let allowed_program_pubkeys = if let Some(programs) = allowed_programs {
-                let pubkeys: Result<Vec<Pubkey>> = programs
-                    .iter()
-                    .map(|p| Pubkey::from_str(p).context(format!("Invalid program address: {}", p)))
-                    .collect();
-                Some(pubkeys?)
-            } else {
-                None
-            };
+            let dummy_keypair = Keypair::new();
+            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
+            let client = Client::new_with_options(cluster, Rc::new(dummy_keypair), CommitmentConfig::confirmed());
+            let program = client.program(*program_id)?;
+
+            let ixs = program
+                .request()
+                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(1_000_000))
+                .accounts(validator_blacklist::accounts::InitConfig {
+                    config: config_keypair.pubkey(),
+                    admin: manager_pubkey,
+                    system_program: system_program::id(),
+                })
+                .args(validator_blacklist::instruction::InitConfig {
+                    min_tvl,
+                    allowed_programs: allowed_program_pubkeys,
+                })
+                .instructions()?;
+
+            let mut tx = Transaction::new_with_payer(&ixs, Some(&manager_pubkey));
+            tx.partial_sign(&[&config_keypair], solana_sdk::hash::Hash::default());
+            let serialized = bincode::serialize(&tx).context("Failed to serialize transaction")?;
+            let base58_tx = bs58::encode(serialized).into_string();
+
+            println!("{}", base58_tx);
+        },
+        _ => {
+            return Err(anyhow::anyhow!("Invalid output format. Use 'execute' or 'base58'"));
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_update_config_command(rpc_url: &str, program_id: &Pubkey, config: String, min_tvl: Option<u64>, allowed_programs: Option<Vec<String>>, output: String, manager: Option<String>, keypair_option: Option<String>) -> Result<()> {
+    let config_pubkey = Pubkey::from_str(&config).context("Invalid config address")?;
+
+    let allowed_program_pubkeys = if let Some(programs) = allowed_programs {
+        let pubkeys: Result<Vec<Pubkey>> = programs
+            .iter()
+            .map(|p| Pubkey::from_str(p).context(format!("Invalid program address: {}", p)))
+            .collect();
+        Some(pubkeys?)
+    } else {
+        None
+    };
+
+    match output.as_str() {
+        "execute" => {
+            let keypair_path = keypair_option.context("Keypair path is required for execute mode")?;
+            let keypair = read_keypair_file(&keypair_path)
+                .map_err(|e| anyhow::anyhow!("Failed to read keypair file: {}", e))?;
+
+            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
+            let client = Client::new_with_options(cluster, Rc::new(keypair.insecure_clone()), CommitmentConfig::confirmed());
+            let program = client.program(*program_id)?;
 
             let signature = program
                 .request()
-                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
+                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(1_000_000))
                 .accounts(validator_blacklist::accounts::UpdateConfig {
                     config: config_pubkey,
                     admin: keypair.pubkey(),
@@ -171,17 +376,59 @@ fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair, prog
 
             println!("UpdateConfig transaction sent: {}", signature);
         },
-        Commands::UpdateConfigAdmin { config, new_admin } => {
-            println!("Executing UpdateConfigAdmin");
+        "base58" => {
+            let manager_pubkey = manager.context("Manager pubkey is required when output is base58")?;
+            let manager_pubkey = Pubkey::from_str(&manager_pubkey).context("Invalid manager pubkey")?;
 
-            let config_pubkey = Pubkey::from_str(&config)
-                .context("Invalid config address")?;
-            let new_admin_pubkey = Pubkey::from_str(&new_admin)
-                .context("Invalid new admin address")?;
+            let dummy_keypair = Keypair::new();
+            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
+            let client = Client::new_with_options(cluster, Rc::new(dummy_keypair), CommitmentConfig::confirmed());
+            let program = client.program(*program_id)?;
+
+            let ixs = program
+                .request()
+                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(1_000_000))
+                .accounts(validator_blacklist::accounts::UpdateConfig {
+                    config: config_pubkey,
+                    admin: manager_pubkey,
+                })
+                .args(validator_blacklist::instruction::UpdateConfig {
+                    min_tvl,
+                    allowed_programs: allowed_program_pubkeys,
+                })
+                .instructions()?;
+
+            let tx = Transaction::new_with_payer(&ixs, Some(&manager_pubkey));
+            let serialized = bincode::serialize(&tx).context("Failed to serialize transaction")?;
+            let base58_tx = bs58::encode(serialized).into_string();
+
+            println!("{}", base58_tx);
+        },
+        _ => {
+            return Err(anyhow::anyhow!("Invalid output format. Use 'execute' or 'base58'"));
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_update_config_admin_command(rpc_url: &str, program_id: &Pubkey, config: String, new_admin: String, output: String, manager: Option<String>, keypair_option: Option<String>) -> Result<()> {
+    let config_pubkey = Pubkey::from_str(&config).context("Invalid config address")?;
+    let new_admin_pubkey = Pubkey::from_str(&new_admin).context("Invalid new admin address")?;
+
+    match output.as_str() {
+        "execute" => {
+            let keypair_path = keypair_option.context("Keypair path is required for execute mode")?;
+            let keypair = read_keypair_file(&keypair_path)
+                .map_err(|e| anyhow::anyhow!("Failed to read keypair file: {}", e))?;
+
+            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
+            let client = Client::new_with_options(cluster, Rc::new(keypair.insecure_clone()), CommitmentConfig::confirmed());
+            let program = client.program(*program_id)?;
 
             let signature = program
                 .request()
-                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
+                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(1_000_000))
                 .accounts(validator_blacklist::accounts::UpdateConfigAdmin {
                     config: config_pubkey,
                     admin: keypair.pubkey(),
@@ -193,43 +440,81 @@ fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair, prog
 
             println!("UpdateConfigAdmin transaction sent: {}", signature);
         },
-        Commands::VoteAdd { config, validator_address, stake_pool, reason, delegation } => {
-            println!("Executing VoteAdd for validator: {}", validator_address);
-            
-            // Parse string arguments to Pubkey
-            let config_pubkey = Pubkey::from_str(&config)
-                .context("Invalid config address")?;
-            let validator_pubkey = Pubkey::from_str(&validator_address)
-                .context("Invalid validator address")?;
-            let stake_pool_pubkey = Pubkey::from_str(&stake_pool)
-                .context("Invalid stake pool address")?;
-            let delegation_pubkey = if let Some(del) = delegation {
-                Some(Pubkey::from_str(&del).context("Invalid delegation address")?)
-            } else {
-                None
-            };
-            
-            // Calculate PDAs with config seed
-            let (blacklist_pda, _) = Pubkey::find_program_address(
-                &[b"blacklist", config_pubkey.as_ref(), validator_pubkey.as_ref()],
-                program_id,
-            );
-            
-            let (vote_add_pda, _) = Pubkey::find_program_address(
-                &[b"vote_add", config_pubkey.as_ref(), stake_pool_pubkey.as_ref(), validator_pubkey.as_ref()],
-                program_id,
-            );
+        "base58" => {
+            let manager_pubkey = manager.context("Manager pubkey is required when output is base58")?;
+            let manager_pubkey = Pubkey::from_str(&manager_pubkey).context("Invalid manager pubkey")?;
 
-            let delegation_pda = delegation_pubkey.map(|_| {
-                Pubkey::find_program_address(
-                    &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
-                    program_id,
-                ).0
-            });
+            let dummy_keypair = Keypair::new();
+            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
+            let client = Client::new_with_options(cluster, Rc::new(dummy_keypair), CommitmentConfig::confirmed());
+            let program = client.program(*program_id)?;
+
+            let ixs = program
+                .request()
+                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(1_000_000))
+                .accounts(validator_blacklist::accounts::UpdateConfigAdmin {
+                    config: config_pubkey,
+                    admin: manager_pubkey,
+                })
+                .args(validator_blacklist::instruction::UpdateConfigAdmin {
+                    new_admin: new_admin_pubkey,
+                })
+                .instructions()?;
+
+            let tx = Transaction::new_with_payer(&ixs, Some(&manager_pubkey));
+            let serialized = bincode::serialize(&tx).context("Failed to serialize transaction")?;
+            let base58_tx = bs58::encode(serialized).into_string();
+
+            println!("{}", base58_tx);
+        },
+        _ => {
+            return Err(anyhow::anyhow!("Invalid output format. Use 'execute' or 'base58'"));
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_vote_add_command(rpc_url: &str, program_id: &Pubkey, config: String, validator_address: String, stake_pool: String, reason: String, delegation: Option<String>, output: String, manager: Option<String>, keypair_option: Option<String>) -> Result<()> {
+    let config_pubkey = Pubkey::from_str(&config).context("Invalid config address")?;
+    let validator_pubkey = Pubkey::from_str(&validator_address).context("Invalid validator address")?;
+    let stake_pool_pubkey = Pubkey::from_str(&stake_pool).context("Invalid stake pool address")?;
+    let delegation_pubkey = if let Some(del) = delegation {
+        Some(Pubkey::from_str(&del).context("Invalid delegation address")?)
+    } else {
+        None
+    };
+
+    let (blacklist_pda, _) = Pubkey::find_program_address(
+        &[b"blacklist", config_pubkey.as_ref(), validator_pubkey.as_ref()],
+        program_id,
+    );
+
+    let (vote_add_pda, _) = Pubkey::find_program_address(
+        &[b"vote_add", config_pubkey.as_ref(), stake_pool_pubkey.as_ref(), validator_pubkey.as_ref()],
+        program_id,
+    );
+
+    let delegation_pda = delegation_pubkey.map(|_| {
+        Pubkey::find_program_address(
+            &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
+            program_id,
+        ).0
+    });
+
+    match output.as_str() {
+        "execute" => {
+            let keypair_path = keypair_option.context("Keypair path is required for execute mode")?;
+            let keypair = read_keypair_file(&keypair_path)
+                .map_err(|e| anyhow::anyhow!("Failed to read keypair file: {}", e))?;
+
+            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
+            let client = Client::new_with_options(cluster, Rc::new(keypair.insecure_clone()), CommitmentConfig::confirmed());
+            let program = client.program(*program_id)?;
 
             let signature = program
                 .request()
-                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
+                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(1_000_000))
                 .accounts(validator_blacklist::accounts::VoteAdd {
                     config: config_pubkey,
                     stake_pool: stake_pool_pubkey,
@@ -247,43 +532,87 @@ fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair, prog
 
             println!("Vote to add transaction sent: {}", signature);
         },
-        Commands::VoteRemove { config, validator_address, stake_pool, reason, delegation } => {
-            println!("Executing VoteRemove for validator: {}", validator_address);
-            
-            // Parse string arguments to Pubkey
-            let config_pubkey = Pubkey::from_str(&config)
-                .context("Invalid config address")?;
-            let validator_pubkey = Pubkey::from_str(&validator_address)
-                .context("Invalid validator address")?;
-            let stake_pool_pubkey = Pubkey::from_str(&stake_pool)
-                .context("Invalid stake pool address")?;
-            let delegation_pubkey = if let Some(del) = delegation {
-                Some(Pubkey::from_str(&del).context("Invalid delegation address")?)
-            } else {
-                None
-            };
-            
-            // Calculate PDAs with config seed
-            let (blacklist_pda, _) = Pubkey::find_program_address(
-                &[b"blacklist", config_pubkey.as_ref(), validator_pubkey.as_ref()],
-                program_id,
-            );
-            
-            let (vote_remove_pda, _) = Pubkey::find_program_address(
-                &[b"vote_remove", config_pubkey.as_ref(), stake_pool_pubkey.as_ref(), validator_pubkey.as_ref()],
-                program_id,
-            );
+        "base58" => {
+            let manager_pubkey = manager.context("Manager pubkey is required when output is base58")?;
+            let manager_pubkey = Pubkey::from_str(&manager_pubkey).context("Invalid manager pubkey")?;
 
-            let delegation_pda = delegation_pubkey.map(|_| {
-                Pubkey::find_program_address(
-                    &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
-                    program_id,
-                ).0
-            });
+            let dummy_keypair = Keypair::new();
+            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
+            let client = Client::new_with_options(cluster, Rc::new(dummy_keypair), CommitmentConfig::confirmed());
+            let program = client.program(*program_id)?;
+
+            let ixs = program
+                .request()
+                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(1_000_000))
+                .accounts(validator_blacklist::accounts::VoteAdd {
+                    config: config_pubkey,
+                    stake_pool: stake_pool_pubkey,
+                    blacklist: blacklist_pda,
+                    vote_add: vote_add_pda,
+                    delegation: delegation_pda,
+                    authority: manager_pubkey,
+                    system_program: system_program::id(),
+                })
+                .args(validator_blacklist::instruction::VoteAdd {
+                    validator_identity_address: validator_pubkey,
+                    reason,
+                })
+                .instructions()?;
+
+            let tx = Transaction::new_with_payer(&ixs, Some(&manager_pubkey));
+            let serialized = bincode::serialize(&tx).context("Failed to serialize transaction")?;
+            let base58_tx = bs58::encode(serialized).into_string();
+
+            println!("{}", base58_tx);
+        },
+        _ => {
+            return Err(anyhow::anyhow!("Invalid output format. Use 'execute' or 'base58'"));
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_vote_remove_command(rpc_url: &str, program_id: &Pubkey, config: String, validator_address: String, stake_pool: String, reason: String, delegation: Option<String>, output: String, manager: Option<String>, keypair_option: Option<String>) -> Result<()> {
+    let config_pubkey = Pubkey::from_str(&config).context("Invalid config address")?;
+    let validator_pubkey = Pubkey::from_str(&validator_address).context("Invalid validator address")?;
+    let stake_pool_pubkey = Pubkey::from_str(&stake_pool).context("Invalid stake pool address")?;
+    let delegation_pubkey = if let Some(del) = delegation {
+        Some(Pubkey::from_str(&del).context("Invalid delegation address")?)
+    } else {
+        None
+    };
+
+    let (blacklist_pda, _) = Pubkey::find_program_address(
+        &[b"blacklist", config_pubkey.as_ref(), validator_pubkey.as_ref()],
+        program_id,
+    );
+
+    let (vote_remove_pda, _) = Pubkey::find_program_address(
+        &[b"vote_remove", config_pubkey.as_ref(), stake_pool_pubkey.as_ref(), validator_pubkey.as_ref()],
+        program_id,
+    );
+
+    let delegation_pda = delegation_pubkey.map(|_| {
+        Pubkey::find_program_address(
+            &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
+            program_id,
+        ).0
+    });
+
+    match output.as_str() {
+        "execute" => {
+            let keypair_path = keypair_option.context("Keypair path is required for execute mode")?;
+            let keypair = read_keypair_file(&keypair_path)
+                .map_err(|e| anyhow::anyhow!("Failed to read keypair file: {}", e))?;
+
+            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
+            let client = Client::new_with_options(cluster, Rc::new(keypair.insecure_clone()), CommitmentConfig::confirmed());
+            let program = client.program(*program_id)?;
 
             let signature = program
                 .request()
-                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
+                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(1_000_000))
                 .accounts(validator_blacklist::accounts::VoteRemove {
                     config: config_pubkey,
                     stake_pool: stake_pool_pubkey,
@@ -301,43 +630,87 @@ fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair, prog
 
             println!("Vote to remove transaction sent: {}", signature);
         },
-        Commands::UnvoteAdd { config, validator_address, stake_pool, delegation } => {
-            println!("Executing UnvoteAdd for validator: {}", validator_address);
-            
-            // Parse string arguments to Pubkey
-            let config_pubkey = Pubkey::from_str(&config)
-                .context("Invalid config address")?;
-            let validator_pubkey = Pubkey::from_str(&validator_address)
-                .context("Invalid validator address")?;
-            let stake_pool_pubkey = Pubkey::from_str(&stake_pool)
-                .context("Invalid stake pool address")?;
-            let delegation_pubkey = if let Some(del) = delegation {
-                Some(Pubkey::from_str(&del).context("Invalid delegation address")?)
-            } else {
-                None
-            };
-            
-            // Calculate PDAs with config seed
-            let (blacklist_pda, _) = Pubkey::find_program_address(
-                &[b"blacklist", config_pubkey.as_ref(), validator_pubkey.as_ref()],
-                program_id,
-            );
-            
-            let (vote_add_pda, _) = Pubkey::find_program_address(
-                &[b"vote_add", config_pubkey.as_ref(), stake_pool_pubkey.as_ref(), validator_pubkey.as_ref()],
-                program_id,
-            );
+        "base58" => {
+            let manager_pubkey = manager.context("Manager pubkey is required when output is base58")?;
+            let manager_pubkey = Pubkey::from_str(&manager_pubkey).context("Invalid manager pubkey")?;
 
-            let delegation_pda = delegation_pubkey.map(|_| {
-                Pubkey::find_program_address(
-                    &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
-                    program_id,
-                ).0
-            });
+            let dummy_keypair = Keypair::new();
+            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
+            let client = Client::new_with_options(cluster, Rc::new(dummy_keypair), CommitmentConfig::confirmed());
+            let program = client.program(*program_id)?;
+
+            let ixs = program
+                .request()
+                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(1_000_000))
+                .accounts(validator_blacklist::accounts::VoteRemove {
+                    config: config_pubkey,
+                    stake_pool: stake_pool_pubkey,
+                    blacklist: blacklist_pda,
+                    vote_remove: vote_remove_pda,
+                    delegation: delegation_pda,
+                    authority: manager_pubkey,
+                    system_program: system_program::id(),
+                })
+                .args(validator_blacklist::instruction::VoteRemove {
+                    validator_identity_address: validator_pubkey,
+                    reason,
+                })
+                .instructions()?;
+
+            let tx = Transaction::new_with_payer(&ixs, Some(&manager_pubkey));
+            let serialized = bincode::serialize(&tx).context("Failed to serialize transaction")?;
+            let base58_tx = bs58::encode(serialized).into_string();
+
+            println!("{}", base58_tx);
+        },
+        _ => {
+            return Err(anyhow::anyhow!("Invalid output format. Use 'execute' or 'base58'"));
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_unvote_add_command(rpc_url: &str, program_id: &Pubkey, config: String, validator_address: String, stake_pool: String, delegation: Option<String>, output: String, manager: Option<String>, keypair_option: Option<String>) -> Result<()> {
+    let config_pubkey = Pubkey::from_str(&config).context("Invalid config address")?;
+    let validator_pubkey = Pubkey::from_str(&validator_address).context("Invalid validator address")?;
+    let stake_pool_pubkey = Pubkey::from_str(&stake_pool).context("Invalid stake pool address")?;
+    let delegation_pubkey = if let Some(del) = delegation {
+        Some(Pubkey::from_str(&del).context("Invalid delegation address")?)
+    } else {
+        None
+    };
+
+    let (blacklist_pda, _) = Pubkey::find_program_address(
+        &[b"blacklist", config_pubkey.as_ref(), validator_pubkey.as_ref()],
+        program_id,
+    );
+
+    let (vote_add_pda, _) = Pubkey::find_program_address(
+        &[b"vote_add", config_pubkey.as_ref(), stake_pool_pubkey.as_ref(), validator_pubkey.as_ref()],
+        program_id,
+    );
+
+    let delegation_pda = delegation_pubkey.map(|_| {
+        Pubkey::find_program_address(
+            &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
+            program_id,
+        ).0
+    });
+
+    match output.as_str() {
+        "execute" => {
+            let keypair_path = keypair_option.context("Keypair path is required for execute mode")?;
+            let keypair = read_keypair_file(&keypair_path)
+                .map_err(|e| anyhow::anyhow!("Failed to read keypair file: {}", e))?;
+
+            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
+            let client = Client::new_with_options(cluster, Rc::new(keypair.insecure_clone()), CommitmentConfig::confirmed());
+            let program = client.program(*program_id)?;
 
             let signature = program
                 .request()
-                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
+                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(1_000_000))
                 .accounts(validator_blacklist::accounts::UnvoteAdd {
                     config: config_pubkey,
                     stake_pool: stake_pool_pubkey,
@@ -353,43 +726,85 @@ fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair, prog
 
             println!("Unvote add transaction sent: {}", signature);
         },
-        Commands::UnvoteRemove { config, validator_address, stake_pool, delegation } => {
-            println!("Executing UnvoteRemove for validator: {}", validator_address);
-            
-            // Parse string arguments to Pubkey
-            let config_pubkey = Pubkey::from_str(&config)
-                .context("Invalid config address")?;
-            let validator_pubkey = Pubkey::from_str(&validator_address)
-                .context("Invalid validator address")?;
-            let stake_pool_pubkey = Pubkey::from_str(&stake_pool)
-                .context("Invalid stake pool address")?;
-            let delegation_pubkey = if let Some(del) = delegation {
-                Some(Pubkey::from_str(&del).context("Invalid delegation address")?)
-            } else {
-                None
-            };
-            
-            // Calculate PDAs with config seed
-            let (blacklist_pda, _) = Pubkey::find_program_address(
-                &[b"blacklist", config_pubkey.as_ref(), validator_pubkey.as_ref()],
-                program_id,
-            );
-            
-            let (vote_remove_pda, _) = Pubkey::find_program_address(
-                &[b"vote_remove", config_pubkey.as_ref(), stake_pool_pubkey.as_ref(), validator_pubkey.as_ref()],
-                program_id,
-            );
+        "base58" => {
+            let manager_pubkey = manager.context("Manager pubkey is required when output is base58")?;
+            let manager_pubkey = Pubkey::from_str(&manager_pubkey).context("Invalid manager pubkey")?;
 
-            let delegation_pda = delegation_pubkey.map(|_| {
-                Pubkey::find_program_address(
-                    &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
-                    program_id,
-                ).0
-            });
+            let dummy_keypair = Keypair::new();
+            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
+            let client = Client::new_with_options(cluster, Rc::new(dummy_keypair), CommitmentConfig::confirmed());
+            let program = client.program(*program_id)?;
+
+            let ixs = program
+                .request()
+                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(1_000_000))
+                .accounts(validator_blacklist::accounts::UnvoteAdd {
+                    config: config_pubkey,
+                    stake_pool: stake_pool_pubkey,
+                    blacklist: blacklist_pda,
+                    vote_add: vote_add_pda,
+                    delegation: delegation_pda,
+                    authority: manager_pubkey,
+                })
+                .args(validator_blacklist::instruction::UnvoteAdd {
+                    validator_identity_address: validator_pubkey,
+                })
+                .instructions()?;
+
+            let tx = Transaction::new_with_payer(&ixs, Some(&manager_pubkey));
+            let serialized = bincode::serialize(&tx).context("Failed to serialize transaction")?;
+            let base58_tx = bs58::encode(serialized).into_string();
+
+            println!("{}", base58_tx);
+        },
+        _ => {
+            return Err(anyhow::anyhow!("Invalid output format. Use 'execute' or 'base58'"));
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_unvote_remove_command(rpc_url: &str, program_id: &Pubkey, config: String, validator_address: String, stake_pool: String, delegation: Option<String>, output: String, manager: Option<String>, keypair_option: Option<String>) -> Result<()> {
+    let config_pubkey = Pubkey::from_str(&config).context("Invalid config address")?;
+    let validator_pubkey = Pubkey::from_str(&validator_address).context("Invalid validator address")?;
+    let stake_pool_pubkey = Pubkey::from_str(&stake_pool).context("Invalid stake pool address")?;
+    let delegation_pubkey = if let Some(del) = delegation {
+        Some(Pubkey::from_str(&del).context("Invalid delegation address")?)
+    } else {
+        None
+    };
+
+    let (blacklist_pda, _) = Pubkey::find_program_address(
+        &[b"blacklist", config_pubkey.as_ref(), validator_pubkey.as_ref()],
+        program_id,
+    );
+
+    let (vote_remove_pda, _) = Pubkey::find_program_address(
+        &[b"vote_remove", config_pubkey.as_ref(), stake_pool_pubkey.as_ref(), validator_pubkey.as_ref()],
+        program_id,
+    );
+
+    let delegation_pda = delegation_pubkey.map(|_| {
+        Pubkey::find_program_address(
+            &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
+            program_id,
+        ).0
+    });
+
+    match output.as_str() {
+        "execute" => {
+            let keypair_path = keypair_option.context("Keypair path is required for execute mode")?;
+            let keypair = read_keypair_file(&keypair_path)
+                .map_err(|e| anyhow::anyhow!("Failed to read keypair file: {}", e))?;
+
+            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
+            let client = Client::new_with_options(cluster, Rc::new(keypair.insecure_clone()), CommitmentConfig::confirmed());
+            let program = client.program(*program_id)?;
 
             let signature = program
                 .request()
-                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
+                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(1_000_000))
                 .accounts(validator_blacklist::accounts::UnvoteRemove {
                     config: config_pubkey,
                     stake_pool: stake_pool_pubkey,
@@ -405,182 +820,33 @@ fn execute_instruction(command: Commands, rpc_url: &str, keypair: &Keypair, prog
 
             println!("Unvote remove transaction sent: {}", signature);
         },
-        Commands::List | Commands::Delegate { .. } | Commands::Undelegate { .. } => {
-            unreachable!()
-        }
-    }
-
-    Ok(())
-}
-
-fn handle_delegate_command(rpc_url: &str, program_id: &Pubkey, config: String, stake_pool: String, delegate: String, output: String, manager: Option<String>, keypair_option: Option<String>) -> Result<()> {
-    // Parse string arguments to Pubkey
-    let config_pubkey = Pubkey::from_str(&config)
-        .context("Invalid config address")?;
-    let stake_pool_pubkey = Pubkey::from_str(&stake_pool)
-        .context("Invalid stake pool address")?;
-    let delegate_pubkey = Pubkey::from_str(&delegate)
-        .context("Invalid delegate address")?;
-
-    match output.as_str() {
-        "execute" => {
-            // Execution mode - requires keypair
-            let keypair_path = keypair_option
-                .context("Keypair path is required for execute mode")?;
-
-            let keypair = read_keypair_file(&keypair_path)
-                    .map_err(|e| anyhow::anyhow!("Failed to read keypair file: {}", e))?;
-
-            // Create the Anchor client
-            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
-            let client = Client::new_with_options(cluster, Rc::new(keypair.insecure_clone()), CommitmentConfig::confirmed());
-            let program = client.program(*program_id)?;
-            let cu = 1_000_000;
-
-            let (delegation_pda, _) = Pubkey::find_program_address(
-                &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
-                program_id,
-            );
-
-            let signature = program
-                .request()
-                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
-                .accounts(validator_blacklist::accounts::Delegate {
-                    config: config_pubkey,
-                    stake_pool: stake_pool_pubkey,
-                    delegation: delegation_pda,
-                    manager: keypair.pubkey(),
-                    delegate: delegate_pubkey,
-                    system_program: system_program::id(),
-                })
-                .args(validator_blacklist::instruction::Delegate {})
-                .send()?;
-
-            println!("Delegate transaction sent: {}", signature);
-        },
         "base58" => {
-            // Base58 serialization mode - requires manager pubkey
-            let manager_pubkey = manager
-                .context("Manager pubkey is required when output is base58")?;
-            let manager_pubkey = Pubkey::from_str(&manager_pubkey)
-                .context("Invalid manager pubkey")?;
+            let manager_pubkey = manager.context("Manager pubkey is required when output is base58")?;
+            let manager_pubkey = Pubkey::from_str(&manager_pubkey).context("Invalid manager pubkey")?;
 
-            // Create a dummy keypair for the client (won't be used for signing)
             let dummy_keypair = Keypair::new();
-
-            // Create the Anchor client
             let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
             let client = Client::new_with_options(cluster, Rc::new(dummy_keypair), CommitmentConfig::confirmed());
             let program = client.program(*program_id)?;
 
-            let (delegation_pda, _) = Pubkey::find_program_address(
-                &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
-                program_id,
-            );
-
             let ixs = program
                 .request()
-                .accounts(validator_blacklist::accounts::Delegate {
+                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(1_000_000))
+                .accounts(validator_blacklist::accounts::UnvoteRemove {
                     config: config_pubkey,
                     stake_pool: stake_pool_pubkey,
+                    blacklist: blacklist_pda,
+                    vote_remove: vote_remove_pda,
                     delegation: delegation_pda,
-                    manager: manager_pubkey,
-                    delegate: delegate_pubkey,
-                    system_program: system_program::id(),
+                    authority: manager_pubkey,
                 })
-                .args(validator_blacklist::instruction::Delegate {})
+                .args(validator_blacklist::instruction::UnvoteRemove {
+                    validator_identity_address: validator_pubkey,
+                })
                 .instructions()?;
+
             let tx = Transaction::new_with_payer(&ixs, Some(&manager_pubkey));
-            // Serialize transaction to base58
-            let serialized = bincode::serialize(&tx)
-                .context("Failed to serialize transaction")?;
-            let base58_tx = bs58::encode(serialized).into_string();
-
-            println!("{}", base58_tx);
-        },
-        _ => {
-            return Err(anyhow::anyhow!("Invalid output format. Use 'execute' or 'base58'"));
-        }
-    }
-
-    Ok(())
-}
-
-fn handle_undelegate_command(rpc_url: &str, program_id: &Pubkey, config: String, stake_pool: String, output: String, manager: Option<String>, keypair_option: Option<String>) -> Result<()> {
-    // Parse string arguments to Pubkey
-    let config_pubkey = Pubkey::from_str(&config)
-        .context("Invalid config address")?;
-    let stake_pool_pubkey = Pubkey::from_str(&stake_pool)
-        .context("Invalid stake pool address")?;
-
-    match output.as_str() {
-        "execute" => {
-            // Execution mode - requires keypair
-            let keypair_path = keypair_option
-                .context("Keypair path is required for execute mode")?;
-
-            let keypair = read_keypair_file(&keypair_path)
-                    .map_err(|e| anyhow::anyhow!("Failed to read keypair file: {}", e))?;
-
-            // Create the Anchor client
-            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
-            let client = Client::new_with_options(cluster, Rc::new(keypair.insecure_clone()), CommitmentConfig::confirmed());
-            let program = client.program(*program_id)?;
-            let cu = 1_000_000;
-
-            let (delegation_pda, _) = Pubkey::find_program_address(
-                &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
-                program_id,
-            );
-
-            let signature = program
-                .request()
-                .instruction(solana_sdk::compute_budget::ComputeBudgetInstruction::set_compute_unit_limit(cu))
-                .accounts(validator_blacklist::accounts::Undelegate {
-                    config: config_pubkey,
-                    delegation: delegation_pda,
-                    stake_pool: stake_pool_pubkey,
-                    manager: keypair.pubkey(),
-                })
-                .args(validator_blacklist::instruction::Undelegate {})
-                .send()?;
-
-            println!("Undelegate transaction sent: {}", signature);
-        },
-        "base58" => {
-            // Base58 serialization mode - requires manager pubkey
-            let manager_pubkey = manager
-                .context("Manager pubkey is required when output is base58")?;
-            let manager_pubkey = Pubkey::from_str(&manager_pubkey)
-                .context("Invalid manager pubkey")?;
-
-            // Create a dummy keypair for the client (won't be used for signing)
-            let dummy_keypair = Keypair::new();
-
-            // Create the Anchor client
-            let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
-            let client = Client::new_with_options(cluster, Rc::new(dummy_keypair), CommitmentConfig::confirmed());
-            let program = client.program(*program_id)?;
-
-            let (delegation_pda, _) = Pubkey::find_program_address(
-                &[b"delegation", config_pubkey.as_ref(), stake_pool_pubkey.as_ref()],
-                program_id,
-            );
-
-            let ixs = program
-                .request()
-                .accounts(validator_blacklist::accounts::Undelegate {
-                    config: config_pubkey,
-                    delegation: delegation_pda,
-                    stake_pool: stake_pool_pubkey,
-                    manager: manager_pubkey,
-                })
-                .args(validator_blacklist::instruction::Undelegate {})
-                .instructions()?;
-            let tx = Transaction::new_with_payer(&ixs, Some(&manager_pubkey));
-            // Serialize transaction to base58
-            let serialized = bincode::serialize(&tx)
-                .context("Failed to serialize transaction")?;
+            let serialized = bincode::serialize(&tx).context("Failed to serialize transaction")?;
             let base58_tx = bs58::encode(serialized).into_string();
 
             println!("{}", base58_tx);

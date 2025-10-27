@@ -2,144 +2,157 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "validator-blacklist-cli")]
-#[command(about = "A CLI tool for interacting with the Solana validator blacklist program")]
-
+#[command(about = "A CLI for managing validator blacklists")]
 pub struct Cli {
-    /// RPC URL for Solana cluster
-    #[arg(short('u'), long, default_value = "http://localhost:8899")]
+    #[arg(short, long, default_value = "https://api.mainnet-beta.solana.com")]
     pub rpc: String,
 
-    /// Program ID of the validator blacklist program
-    #[arg(short, long)]
-    pub program_id: String,
-
-    /// Keypair file path for the authority
     #[arg(short, long)]
     pub keypair: Option<String>,
+
+    #[arg(short, long, default_value = "VBLCKLiST8oNqfG3UKvWKJGJdunEDCqCxmgJJvP9dFp")]
+    pub program_id: String,
 
     #[command(subcommand)]
     pub command: Commands,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand)]
 pub enum Commands {
-    /// List all blacklisted validators and their vote tallies
+    /// List all blacklisted validators
     List,
     
-    /// Create the global configuration account
+    /// Create a new config account
     CreateConfig {
-        /// Config account address (should be a keypair)
+        #[arg(short, long)]
         config: String,
-        /// Minimum TVL required for stake pools
+        #[arg(short, long)]
         min_tvl: u64,
-        /// Comma-separated list of allowed stake pool program IDs
-        #[arg(value_delimiter = ',')]
+        #[arg(short, long, value_delimiter = ',')]
         allowed_programs: Vec<String>,
+        #[arg(short = 'o', long, default_value = "execute")]
+        output: String,
+        #[arg(short = 'M', long)]
+        manager: Option<String>,
     },
     
-    /// Update the config settings (min_tvl and/or allowed_programs)
+    /// Update an existing config account
     UpdateConfig {
-        /// Config account address
+        #[arg(short, long)]
         config: String,
-        /// New minimum TVL (optional)
-        #[arg(long)]
+        #[arg(short, long)]
         min_tvl: Option<u64>,
-        /// Comma-separated list of new allowed stake pool program IDs (optional)
-        #[arg(long, value_delimiter = ',')]
+        #[arg(short, long, value_delimiter = ',')]
         allowed_programs: Option<Vec<String>>,
+        #[arg(short = 'o', long, default_value = "execute")]
+        output: String,
+        #[arg(short = 'M', long)]
+        manager: Option<String>,
     },
     
-    /// Update the admin of the config
+    /// Update config admin
     UpdateConfigAdmin {
-        /// Config account address
+        #[arg(short, long)]
         config: String,
-        /// New admin pubkey
+        #[arg(short, long)]
         new_admin: String,
+        #[arg(short = 'o', long, default_value = "execute")]
+        output: String,
+        #[arg(short = 'M', long)]
+        manager: Option<String>,
     },
     
     /// Vote to add a validator to the blacklist
     VoteAdd {
-        /// Config account address
+        #[arg(short, long)]
         config: String,
-        /// Validator identity address to blacklist
+        #[arg(short, long)]
         validator_address: String,
-        /// Stake pool address casting the vote
+        #[arg(short, long)]
         stake_pool: String,
-        /// Reason for blacklisting
+        #[arg(short, long)]
         reason: String,
-        /// Optional delegation address if using delegated authority
-        #[arg(long)]
+        #[arg(short, long)]
         delegation: Option<String>,
+        #[arg(short = 'o', long, default_value = "execute")]
+        output: String,
+        #[arg(short = 'M', long)]
+        manager: Option<String>,
     },
     
     /// Vote to remove a validator from the blacklist
     VoteRemove {
-        /// Config account address
+        #[arg(short, long)]
         config: String,
-        /// Validator identity address to remove from blacklist
+        #[arg(short, long)]
         validator_address: String,
-        /// Stake pool address casting the vote
+        #[arg(short, long)]
         stake_pool: String,
-        /// Reason for removal
+        #[arg(short, long)]
         reason: String,
-        /// Optional delegation address if using delegated authority
-        #[arg(long)]
+        #[arg(short, long)]
         delegation: Option<String>,
-    },
-    
-    /// Remove a previously cast vote to add a validator
-    UnvoteAdd {
-        /// Config account address
-        config: String,
-        /// Validator identity address
-        validator_address: String,
-        /// Stake pool address that cast the original vote
-        stake_pool: String,
-        /// Optional delegation address if using delegated authority
-        #[arg(long)]
-        delegation: Option<String>,
-    },
-    
-    /// Remove a previously cast vote to remove a validator
-    UnvoteRemove {
-        /// Config account address
-        config: String,
-        /// Validator identity address
-        validator_address: String,
-        /// Stake pool address that cast the original vote
-        stake_pool: String,
-        /// Optional delegation address if using delegated authority
-        #[arg(long)]
-        delegation: Option<String>,
-    },
-    
-    /// Create a delegation from stake pool manager to another authority
-    Delegate {
-        /// Config account address
-        config: String,
-        /// Stake pool address
-        stake_pool: String,
-        /// Address to delegate authority to
-        delegate: String,
-        /// Output format: 'execute' (default) to execute the transaction, or 'base58' to serialize and print the transaction in base58 format
-        #[arg(long, default_value = "execute", help = "Output format: 'execute' (default) or 'base58'")]
+        #[arg(short = 'o', long, default_value = "execute")]
         output: String,
-        /// Manager pubkey (required when --output is 'base58'). When using base58 output, provide the manager's public key instead of using a keypair file
-        #[arg(long, help = "Manager pubkey (required when output is base58)")]
+        #[arg(short = 'M', long)]
         manager: Option<String>,
     },
     
-    /// Remove a delegation
-    Undelegate {
-        /// Config account address
+    /// Unvote add (remove a previous add vote)
+    UnvoteAdd {
+        #[arg(short, long)]
         config: String,
-        /// Stake pool address
+        #[arg(short, long)]
+        validator_address: String,
+        #[arg(short, long)]
         stake_pool: String,
-        /// Output format: 'execute' (default) to execute the transaction, or 'base58' to serialize and print the transaction in base58 format
-        #[arg(long, default_value = "execute", help = "Output format: 'execute' (default) or 'base58'")]
+        #[arg(short, long)]
+        delegation: Option<String>,
+        #[arg(short = 'o', long, default_value = "execute")]
         output: String,
-        /// Manager pubkey (required when --output is 'base58'). When using base58 output, provide the manager's public key instead of using a keypair file
-        #[arg(long, help = "Manager pubkey (required when output is base58)")]
+        #[arg(short = 'M', long)]
+        manager: Option<String>,
+    },
+    
+    /// Unvote remove (remove a previous remove vote)
+    UnvoteRemove {
+        #[arg(short, long)]
+        config: String,
+        #[arg(short, long)]
+        validator_address: String,
+        #[arg(short, long)]
+        stake_pool: String,
+        #[arg(short, long)]
+        delegation: Option<String>,
+        #[arg(short = 'o', long, default_value = "execute")]
+        output: String,
+        #[arg(short = 'M', long)]
+        manager: Option<String>,
+    },
+    
+    /// Delegate authority to another account
+    Delegate {
+        #[arg(short, long)]
+        config: String,
+        #[arg(short, long)]
+        stake_pool: String,
+        #[arg(short, long)]
+        delegate: String,
+        #[arg(short = 'o', long, default_value = "execute")]
+        output: String,
+        #[arg(short = 'M', long)]
+        manager: Option<String>,
+    },
+    
+    /// Remove delegation (undelegate)
+    Undelegate {
+        #[arg(short, long)]
+        config: String,
+        #[arg(short, long)]
+        stake_pool: String,
+        #[arg(short = 'o', long, default_value = "execute")]
+        output: String,
+        #[arg(short = 'M', long)]
         manager: Option<String>,
     },
 }
