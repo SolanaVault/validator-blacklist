@@ -131,14 +131,16 @@ pub enum Commands {
         manager: Option<String>,
     },
 
-    /// Batch ban validators from a CSV file
+    /// Batch ban validators from a CSV file, filtering by active validators
     BatchBan {
         #[arg(short, long, default_value = DEFAULT_CONFIG)]
         config: String,
         #[arg(short, long)]
         stake_pool: String,
         #[arg(short = 'f', long)]
-        csv: String,
+        file: String,
+        #[arg(short = 'v', long)]
+        validators_file: Option<String>,
         #[arg(short, long)]
         delegation: Option<String>,
     },
