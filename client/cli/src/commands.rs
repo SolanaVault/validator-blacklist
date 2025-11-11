@@ -53,8 +53,8 @@ pub fn run_command(cli: Cli) -> Result<()> {
         Commands::UnvoteRemove { config, validator_address, stake_pool, delegation } => {
             handle_unvote_remove_command(&cli.rpc, &program_id, config, validator_address, stake_pool, delegation, cli.keypair)?;
         }
-        Commands::BatchBan { config, stake_pool, csv, delegation} => {
-            handle_batch_ban_command(&cli.rpc, &program_id, config, stake_pool, csv, delegation, cli.keypair)?;
+        Commands::BatchBan { config, stake_pool, file, validators_file, delegation } => {
+            handle_batch_ban_command(&cli.rpc, &program_id, config, stake_pool, file, validators_file, delegation, cli.keypair)?;
         }
     }
 
@@ -592,13 +592,16 @@ fn handle_unvote_remove_command(rpc_url: &str, program_id: &Pubkey, config: Stri
     Ok(())
 }
 
-fn handle_batch_ban_command(rpc_url: &str, program_id: &Pubkey, config: String, stake_pool: String, csv: String, delegation: Option<String>, keypair_option: Option<String>) -> Result<()> {
+fn handle_batch_ban_command(rpc_url: &str, program_id: &Pubkey, config: String, stake_pool: String, csv: String, validators_file: Option<String>, delegation: Option<String>, keypair_option: Option<String>) -> Result<()> {
+    use std::fs;
+    use std::collections::HashSet;
+
     let config_pubkey = Pubkey::from_str(&config).context("Invalid config address")?;
     let stake_pool_pubkey = Pubkey::from_str(&stake_pool).context("Invalid stake pool address")?;
 
     // Read the CSV file
     let mut validator_addresses = Vec::new();
-    let mut reasons = Vec::new();
+    let mut csv_reasons = Vec::new();
 
     println!("📖 Reading CSV file: {}", csv);
     let mut rdr = csv::Reader::from_path(&csv)?;
@@ -619,19 +622,23 @@ fn handle_batch_ban_command(rpc_url: &str, program_id: &Pubkey, config: String, 
             continue;
         }
 
-        if record.len() < 2 {
-            println!("   ⚠️  Skipping invalid row (expected 2 columns): {:?}", record);
+        if record.len() < 1 {
+            println!("   ⚠️  Skipping invalid row (expected at least 1 column): {:?}", record);
             continue;
         }
 
         let validator_address = record.get(0).context("Missing validator_address")?;
-        let reason = record.get(1).context("Missing reason")?;
+
+        // Reason is required in the second column
+        let csv_reason = record.get(1)
+            .context(format!("Missing reason on row {}: validator {} has no reason provided", row_count + 1, validator_address))?
+            .to_string();
 
         let validator_pubkey = Pubkey::from_str(validator_address)
             .context(format!("Invalid validator address on row {}: {}", row_count + 1, validator_address))?;
 
         validator_addresses.push(validator_pubkey);
-        reasons.push(reason.to_string());
+        csv_reasons.push(csv_reason);
         row_count += 1;
     }
 
@@ -640,6 +647,48 @@ fn handle_batch_ban_command(rpc_url: &str, program_id: &Pubkey, config: String, 
     if validator_addresses.is_empty() {
         return Err(anyhow::anyhow!("No valid validators found in CSV file"));
     }
+
+    // If validators file is provided, filter by active validators
+    let active_validators = if let Some(validators_file_path) = validators_file {
+        println!("📋 Reading validators list from: {}", validators_file_path);
+        let validators_content = fs::read_to_string(&validators_file_path)
+            .context(format!("Failed to read validators file: {}", validators_file_path))?;
+
+        let entries = crate::validator_parser::parse_validator_list(&validators_content)?;
+        let active_set: HashSet<Pubkey> = entries.iter().map(|e| e.identity).collect();
+
+        println!("✅ Loaded {} active validators from list", active_set.len());
+        Some(active_set)
+    } else {
+        None
+    };
+
+    // Filter validators to only those in the active list
+    let mut filtered_validators = Vec::new();
+    let mut filtered_reasons = Vec::new();
+    let mut skipped_count = 0;
+
+    for (validator_pubkey, reason) in validator_addresses.iter().zip(csv_reasons.iter()) {
+        if let Some(ref active_set) = active_validators {
+            if !active_set.contains(validator_pubkey) {
+                println!("⏭️  Skipping {} (not in active validators list)", validator_pubkey);
+                skipped_count += 1;
+                continue;
+            }
+        }
+        filtered_validators.push(*validator_pubkey);
+        filtered_reasons.push(reason.clone());
+    }
+
+    if skipped_count > 0 {
+        println!("⏭️  Skipped {} validators (already shut down)", skipped_count);
+    }
+
+    if filtered_validators.is_empty() {
+        return Err(anyhow::anyhow!("No active validators to ban after filtering"));
+    }
+
+    println!("🎯 Will ban {} validators\n", filtered_validators.len());
 
     let delegation_pubkey = delegation.as_ref()
         .map(|del| Pubkey::from_str(del).context("Invalid delegation address"))
@@ -659,11 +708,10 @@ fn handle_batch_ban_command(rpc_url: &str, program_id: &Pubkey, config: String, 
     let cluster = Cluster::Custom(rpc_url.to_string(), "none".to_string());
     let client = Client::new_with_options(cluster, Rc::new(keypair.insecure_clone()), CommitmentConfig::confirmed());
     let program = client.program(*program_id)?;
-    let rpc_client = RpcClient::new(rpc_url.to_string());
 
     println!("Starting batch ban...\n");
 
-    for (i, (validator_pubkey, reason)) in validator_addresses.iter().zip(reasons.iter()).enumerate() {
+    for (i, (validator_pubkey, ban_reason)) in filtered_validators.iter().zip(filtered_reasons.iter()).enumerate() {
         let (blacklist_pda, _) = Pubkey::find_program_address(
             &[b"blacklist", config_pubkey.as_ref(), validator_pubkey.as_ref()],
             program_id,
@@ -673,8 +721,6 @@ fn handle_batch_ban_command(rpc_url: &str, program_id: &Pubkey, config: String, 
             &[b"vote_add", config_pubkey.as_ref(), stake_pool_pubkey.as_ref(), validator_pubkey.as_ref()],
             program_id,
         );
-
-        println!("DELEGATION PDA: {}", delegation_pda.unwrap_or_default());
 
         let signature = program
             .request()
@@ -690,12 +736,12 @@ fn handle_batch_ban_command(rpc_url: &str, program_id: &Pubkey, config: String, 
             })
             .args(validator_blacklist::instruction::VoteAdd {
                 validator_identity_address: *validator_pubkey,
-                reason: reason.clone(),
+                reason: ban_reason.clone(),
             })
             .send()?;
 
         println!("[{}/{}] ✓ Voted to ban validator {} for reason: \"{}\"",
-                 i + 1, validator_addresses.len(), validator_pubkey, reason);
+                 i + 1, filtered_validators.len(), validator_pubkey, ban_reason);
         println!("        Transaction signature: {}", signature);
     }
 

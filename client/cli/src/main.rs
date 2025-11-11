@@ -1,5 +1,6 @@
 mod cli;
 mod commands;
+mod validator_parser;
 
 use clap::Parser;
 use cli::Cli;
